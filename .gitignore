@@ -1,0 +1,59 @@
+# ===== Gradle =====
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# ===== Android / Kotlin =====
+.kotlin/
+captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+
+# ===== IntelliJ / Android Studio =====
+.idea/
+*.iml
+*.ipr
+*.iws
+out/
+
+# ===== VS Code =====
+.vscode/
+*.code-workspace
+
+# ===== 本地配置（含 SDK 路径，勿提交）=====
+local.properties
+
+# ===== 日志与崩溃 =====
+*.log
+crashlytics-build.properties
+*.hprof
+*.jfr
+
+# ===== 密钥与签名 =====
+*.jks
+*.keystore
+*.p12
+*.pk8
+keystore.properties
+signing.properties
+
+# ===== 系统文件 =====
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ===== 临时文件 =====
+.temp/
+*.tmp
+*.bak
+*.orig
+*~
+
+# ===== 环境相关 =====
+.env
+.env.local
