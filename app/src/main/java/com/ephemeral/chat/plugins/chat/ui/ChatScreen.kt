@@ -17,6 +17,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Group
+import androidx.compose.material.icons.filled.Logout
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -72,6 +73,15 @@ fun ChatScreen(viewModel: ChatViewModel) {
                             Icons.Default.Group,
                             contentDescription = "成员列表",
                             modifier = Modifier.size(adaptiveDp(24f)),
+                        )
+                    }
+                    // 退出群聊按钮
+                    IconButton(onClick = { viewModel.leaveGroup() }) {
+                        Icon(
+                            Icons.Default.Logout,
+                            contentDescription = "退出群聊",
+                            modifier = Modifier.size(adaptiveDp(24f)),
+                            tint = MaterialTheme.colorScheme.secondary,
                         )
                     }
                 },

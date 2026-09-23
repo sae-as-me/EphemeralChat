@@ -6,10 +6,12 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
+import com.ephemeral.chat.SharedStateManager
 
 /**
  * 个人信息 ViewModel。
  * 管理当前用户名、主题切换、App 版本。
+ * 主题和昵称通过 SharedStateManager 实现跨页面共享。
  */
 @HiltViewModel
 class ProfileViewModel @Inject constructor() : ViewModel() {
@@ -17,23 +19,44 @@ class ProfileViewModel @Inject constructor() : ViewModel() {
     data class ProfileUiState(
         val currentNickname: String = "",
         val isDarkTheme: Boolean = true,
-        val appVersion: String = "1.0.0",
+        val appVersion: String = "0.1",
     )
 
-    private val _uiState = MutableStateFlow(ProfileUiState())
+    private val _uiState = MutableStateFlow(
+        ProfileUiState(
+            currentNickname = SharedStateManager.nickname.value,
+            isDarkTheme = SharedStateManager.isDarkTheme.value,
+        )
+    )
     val uiState: StateFlow<ProfileUiState> = _uiState.asStateFlow()
 
     /**
+     * 刷新状态——从 SharedStateManager 同步最新值。
+     * 在 ProfileScreen 进入时调用。
+     */
+    fun refresh() {
+        _uiState.value = _uiState.value.copy(
+            currentNickname = SharedStateManager.nickname.value,
+            isDarkTheme = SharedStateManager.isDarkTheme.value,
+        )
+    }
+
+    /**
      * 切换深色/浅色主题。
+     * 同时更新 SharedStateManager，MainActivity 自动响应。
      */
     fun toggleTheme() {
-        _uiState.value = _uiState.value.copy(isDarkTheme = !_uiState.value.isDarkTheme)
+        SharedStateManager.toggleTheme()
+        _uiState.value = _uiState.value.copy(isDarkTheme = SharedStateManager.isDarkTheme.value)
     }
 
     /**
      * 设置当前昵称。
+     * 同时更新 SharedStateManager，ChatViewModel 和首页自动读取。
      */
     fun setNickname(nickname: String) {
+        if (nickname.isBlank()) return
+        SharedStateManager.setNickname(nickname)
         _uiState.value = _uiState.value.copy(currentNickname = nickname)
     }
 }

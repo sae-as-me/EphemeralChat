@@ -20,6 +20,7 @@ import com.ephemeral.chat.plugins.storage.entity.MessageEntity
 import com.ephemeral.chat.plugins.storage.entity.MessageType
 import com.ephemeral.chat.protocol.ChatMessage
 import com.ephemeral.chat.protocol.MessageType as ProtocolMessageType
+import com.ephemeral.chat.SharedStateManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -46,8 +47,10 @@ class ChatViewModel @Inject constructor(
     /** 本机 UUID */
     private val myUuid: String = UUID.randomUUID().toString()
 
-    /** 当前昵称 */
-    private var nickname: String = NicknameGenerator.generate()
+    /** 当前昵称——初始化时同步到 SharedStateManager 供 Profile 页面读取 */
+    private var nickname: String = NicknameGenerator.generate().also {
+        SharedStateManager.setNickname(it)
+    }
 
     /** UI 状态 */
     data class ChatUiState(
@@ -169,7 +172,10 @@ class ChatViewModel @Inject constructor(
                     },
                 )
 
-                _uiState.value = _uiState.value.copy(connectionStatus = ConnectionStatus.Connected)
+                _uiState.value = _uiState.value.copy(
+                    connectionStatus = ConnectionStatus.Connected,
+                    screen = Screen.Chat,
+                )
                 Log.i(TAG, "群聊创建成功, code=$code, groupId=$groupId")
             }
         }
@@ -307,6 +313,7 @@ class ChatViewModel @Inject constructor(
         val oldName = nickname
 
         nickname = newName
+        SharedStateManager.setNickname(newName)
         _uiState.value = _uiState.value.copy(nickname = newName)
 
         val nickMsg = ChatMessage(
@@ -592,6 +599,20 @@ class ChatViewModel @Inject constructor(
         } catch (e: Exception) {
             Log.e(TAG, "消息处理失败", e)
         }
+    }
+
+    /**
+     * 导航到加入群聊页面。
+     */
+    fun navigateToJoin() {
+        _uiState.value = _uiState.value.copy(screen = Screen.Join, errorMessage = null)
+    }
+
+    /**
+     * 进入聊天界面（创建群聊或加入成功后调用）。
+     */
+    fun enterChat() {
+        _uiState.value = _uiState.value.copy(screen = Screen.Chat)
     }
 
     /**

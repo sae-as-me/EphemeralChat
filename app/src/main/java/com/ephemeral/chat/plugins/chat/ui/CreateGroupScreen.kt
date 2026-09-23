@@ -21,6 +21,7 @@ import com.ephemeral.chat.plugins.chat.ChatViewModel
 
 /**
  * 首页——创建/加入群聊入口。
+ * 当 inviteCode 非空时显示邀请码等待页（创建者视角）。
  */
 @Composable
 fun CreateGroupScreen(viewModel: ChatViewModel) {
@@ -32,7 +33,7 @@ fun CreateGroupScreen(viewModel: ChatViewModel) {
         verticalArrangement = Arrangement.Center,
     ) {
         if (state.inviteCode.isEmpty()) {
-            // 创建群聊入口
+            // ---- 首页：创建/加入入口 ----
             Text(
                 text = "EphemeralChat",
                 fontSize = adaptiveSp(28f),
@@ -46,16 +47,23 @@ fun CreateGroupScreen(viewModel: ChatViewModel) {
                 color = MaterialTheme.colorScheme.onBackground,
                 textAlign = TextAlign.Center,
             )
+            Spacer(modifier = Modifier.height(adaptiveDp(8f)))
+            // 显示当前昵称
+            Text(
+                text = "当前昵称: ${state.nickname}",
+                fontSize = adaptiveSp(12f),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
             Spacer(modifier = Modifier.height(adaptiveDp(32f)))
             Button(onClick = { viewModel.createGroup() }) {
                 Text("创建群聊", fontSize = adaptiveSp(16f))
             }
             Spacer(modifier = Modifier.height(adaptiveDp(16f)))
-            Button(onClick = { viewModel.uiState.value.let { /* navigate to join */ } }) {
+            Button(onClick = { viewModel.navigateToJoin() }) {
                 Text("加入群聊", fontSize = adaptiveSp(16f))
             }
         } else {
-            // 显示邀请码
+            // ---- 创建者等待页：显示邀请码 ----
             Text(
                 text = "群聊邀请码",
                 fontSize = adaptiveSp(14f),
@@ -75,10 +83,14 @@ fun CreateGroupScreen(viewModel: ChatViewModel) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Spacer(modifier = Modifier.height(adaptiveDp(32f)))
-            if (state.connectionStatus == ChatViewModel.ConnectionStatus.Connected) {
-                Button(onClick = { viewModel.backToHome() }) {
-                    Text("进入群聊", fontSize = adaptiveSp(16f))
-                }
+            // 创建者可直接进入聊天界面（即使无人加入也可先发消息）
+            Button(onClick = { viewModel.enterChat() }) {
+                Text("进入群聊", fontSize = adaptiveSp(16f))
+            }
+            Spacer(modifier = Modifier.height(adaptiveDp(16f)))
+            // 可以取消创建回到首页
+            Button(onClick = { viewModel.backToHome() }) {
+                Text("返回", fontSize = adaptiveSp(14f))
             }
         }
     }

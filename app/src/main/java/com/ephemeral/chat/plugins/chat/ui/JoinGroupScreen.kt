@@ -12,6 +12,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -27,6 +28,7 @@ import com.ephemeral.chat.plugins.chat.ChatViewModel
 
 /**
  * 加入群聊界面。
+ * 4 位数字输入框 + 加入按钮 + 扫描状态 + 返回。
  */
 @Composable
 fun JoinGroupScreen(viewModel: ChatViewModel) {
@@ -53,6 +55,7 @@ fun JoinGroupScreen(viewModel: ChatViewModel) {
             modifier = Modifier.width(adaptiveDp(200f)),
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
             placeholder = { Text("0000", fontSize = adaptiveSp(24f)) },
+            singleLine = true,
         )
 
         Spacer(modifier = Modifier.height(adaptiveDp(24f)))
@@ -99,6 +102,13 @@ fun JoinGroupScreen(viewModel: ChatViewModel) {
                 color = MaterialTheme.colorScheme.secondary,
                 textAlign = TextAlign.Center,
             )
+        }
+
+        Spacer(modifier = Modifier.height(adaptiveDp(24f)))
+
+        // 返回首页
+        TextButton(onClick = { viewModel.backToHome() }) {
+            Text("返回", fontSize = adaptiveSp(14f))
         }
     }
 }
