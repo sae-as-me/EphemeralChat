@@ -19,8 +19,6 @@ class KeyManager {
 
     private val TAG = "KeyManager"
 
-    private val keystore: KeyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-
     /** 数据库密钥别名 */
     private val dbKeyAlias = "ephemeral_db_key"
 
@@ -38,11 +36,23 @@ class KeyManager {
 
     /**
      * 获取数据库密钥（用于 SQLCipher）。
-     * 从 Keystore 获取或生成 AES-256 密钥。
-     * 返回固定 32 字节密文（同一 Keystore 密钥 + 固定 IV → 每次结果相同）。
-     * 修复：GCM 随机 IV 导致每次调用返回不同密码 → SQLCipher 打不开已建库 → 闪退。
+     * 优先从 Android Keystore 派生稳定密钥；若 Keystore 不可用（个别 ROM 兼容问题），
+     * 回退到固定字符串哈希，保证不崩溃且密码跨启动稳定。
      */
     fun getDatabaseKey(): ByteArray {
+        return try {
+            getKeystoreDatabaseKey()
+        } catch (e: Exception) {
+            Log.e(TAG, "Keystore 不可用，使用回退密码", e)
+            fallbackDatabaseKey()
+        }
+    }
+
+    /**
+     * 从 Android Keystore 派生稳定数据库密钥。
+     */
+    private fun getKeystoreDatabaseKey(): ByteArray {
+        val keystore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
         if (!keystore.containsAlias(dbKeyAlias)) {
             // 生成新密钥
             val keyGenerator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
@@ -70,6 +80,15 @@ class KeyManager {
         val encrypted = cipher.doFinal(fixedPlaintext)
         // 用加密结果作为 SQLCipher 密码（固定 32 字节）
         return encrypted.copyOfRange(0, 32)
+    }
+
+    /**
+     * 回退密码——Keystore 不可用时使用固定字符串的 SHA-256 哈希。
+     * 稳定且不依赖系统安全硬件。
+     */
+    private fun fallbackDatabaseKey(): ByteArray {
+        return java.security.MessageDigest.getInstance("SHA-256")
+            .digest("ephemeral_chat_fallback_db_key".toByteArray(Charsets.UTF_8))
     }
 
     /**

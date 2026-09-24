@@ -12,7 +12,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 
 /**
  * 全局共享状态管理器。
@@ -45,19 +44,26 @@ object SharedStateManager {
     private var initialized = false
 
     /**
-     * 初始化——从 DataStore 读取持久化的主题和昵称。
+     * 初始化——从 DataStore 异步读取持久化的主题和昵称。
      * 须在 Application.onCreate 中调用一次。
-     * 注意：只读取一次（first），不能用 collect（无限流会永久阻塞主线程导致白屏）。
+     * 注意：异步读取避免阻塞主线程（低端机上 DataStore 首次读取可能导致 ANR/启动慢）。
      */
     fun init(context: Context) {
         if (initialized) return
         initialized = true
         appContext = context.applicationContext
 
-        val prefs = runBlocking { appContext.dataStore.data.first() }
-        _isDarkTheme.value = prefs[KEY_DARK_THEME] ?: true
-        _nickname.value = prefs[KEY_NICKNAME] ?: ""
-        android.util.Log.i(TAG, "初始化完成: darkTheme=${_isDarkTheme.value}, nickname=${_nickname.value}")
+        scope.launch {
+            try {
+                appContext.dataStore.data.first().let { prefs ->
+                    _isDarkTheme.value = prefs[KEY_DARK_THEME] ?: true
+                    _nickname.value = prefs[KEY_NICKNAME] ?: ""
+                }
+                android.util.Log.i(TAG, "初始化完成: darkTheme=${_isDarkTheme.value}, nickname=${_nickname.value}")
+            } catch (e: Exception) {
+                android.util.Log.e(TAG, "初始化失败（使用默认值）", e)
+            }
+        }
     }
 
     /**

@@ -34,20 +34,51 @@ class EphemeralChatApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // 设置全局未捕获异常处理（防止个别设备兼容性问题导致闪退无反馈）
+        installCrashGuard()
+
         // 初始化全局共享状态（主题/昵称持久化）
-        SharedStateManager.init(this)
+        // 用 try-catch 保护：DataStore 异常不应阻断启动
+        try {
+            SharedStateManager.init(this)
+        } catch (e: Exception) {
+            android.util.Log.e("EphemeralChatApp", "SharedStateManager 初始化失败（忽略继续）", e)
+        }
 
-        pluginRegistry = pluginRegistryProvider.get()
+        try {
+            pluginRegistry = pluginRegistryProvider.get()
 
-        // 完整注册顺序（拓扑排序保证依赖正确）
-        pluginRegistry.register(LocationPlugin())
-        pluginRegistry.register(CryptoPlugin())
-        pluginRegistry.register(StoragePlugin())
-        pluginRegistry.register(BlePlugin())
-        pluginRegistry.register(LifecyclePlugin())
-        pluginRegistry.register(ChatPlugin())
-        pluginRegistry.register(ProfilePlugin())
+            // 完整注册顺序（拓扑排序保证依赖正确）
+            pluginRegistry.register(LocationPlugin())
+            pluginRegistry.register(CryptoPlugin())
+            pluginRegistry.register(StoragePlugin())
+            pluginRegistry.register(BlePlugin())
+            pluginRegistry.register(LifecyclePlugin())
+            pluginRegistry.register(ChatPlugin())
+            pluginRegistry.register(ProfilePlugin())
 
-        pluginRegistry.startAll()
+            pluginRegistry.startAll()
+        } catch (e: Exception) {
+            android.util.Log.e("EphemeralChatApp", "插件注册失败（应用继续运行，功能受限）", e)
+        }
+    }
+
+    /**
+     * 安装全局未捕获异常处理器。
+     * 将崩溃信息写入应用私有文件 crash_log.txt，便于后续排查。
+     */
+    private fun installCrashGuard() {
+        val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            try {
+                val logFile = java.io.File(filesDir, "crash_log.txt")
+                logFile.appendText(
+                    "${System.currentTimeMillis()}\n${thread.name}: ${throwable}\n" +
+                    throwable.stackTrace.joinToString("\n") { "    at $it" } + "\n\n"
+                )
+            } catch (_: Exception) {}
+            // 交给系统默认处理器结束进程
+            defaultHandler?.uncaughtException(thread, throwable)
+        }
     }
 }
