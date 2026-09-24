@@ -609,13 +609,29 @@ class ChatViewModel @Inject constructor(
                 }
 
                 ProtocolMessageType.JOIN_ACK -> {
-                    // Client 处理加入确认
+                    // Client 处理加入确认：跳转群聊 + 本地欢迎系统消息
                     _uiState.value = _uiState.value.copy(
                         screen = Screen.Chat,
                         connectionStatus = ConnectionStatus.Connected,
                         chatEntered = true,
                     )
                     loadGroupData(_uiState.value.groupId)
+
+                    // 本地插入“已加入群聊”欢迎消息
+                    runDb {
+                        storagePlugin.getMessageDao().upsert(
+                            MessageEntity(
+                                msgId = UUID.randomUUID().toString(),
+                                groupId = _uiState.value.groupId,
+                                senderUuid = myUuidShort,
+                                senderName = "系统",
+                                content = "$nickname 已加入群聊",
+                                type = MessageType.SYSTEM,
+                                timestamp = System.currentTimeMillis(),
+                                isDelivered = true,
+                            )
+                        )
+                    }
                 }
 
                 ProtocolMessageType.MSG -> {

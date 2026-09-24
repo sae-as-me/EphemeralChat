@@ -10,6 +10,8 @@ import android.bluetooth.le.BluetoothLeAdvertiser
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.ParcelUuid
 import android.util.Log
 import androidx.core.content.ContextCompat
@@ -25,6 +27,10 @@ class BleAdvertiser(private val context: Context) {
     private var advertiser: BluetoothLeAdvertiser? = null
     private var advertiseCallback: AdvertiseCallback? = null
     private var isAdvertising = false
+
+    /** 广播失败自动重试次数上限 */
+    private val maxRetries = 3
+    private var retryCount = 0
 
     /**
      * 启动 BLE 广播。
@@ -45,6 +51,7 @@ class BleAdvertiser(private val context: Context) {
             Log.w(TAG, "已在广播中，先停止旧广播")
             stop()
         }
+        retryCount = 0
 
         val bluetoothManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
         val adapter = bluetoothManager?.adapter
@@ -111,7 +118,19 @@ class BleAdvertiser(private val context: Context) {
                     ADVERTISE_FAILED_TOO_MANY_ADVERTISERS -> "广播器数量超限"
                     else -> "广播失败（错误码 $errorCode）"
                 }
-                onError(msg)
+
+                // 自动重试，避免偶发失败导致对方搜不到
+                if (retryCount < maxRetries) {
+                    retryCount++
+                    Log.w(TAG, "$msg，${retryCount}/$maxRetries 次重试")
+                    Handler(Looper.getMainLooper()).postDelayed({
+                        if (!isAdvertising) {
+                            advertiser?.startAdvertising(settings, advertiseData, this)
+                        }
+                    }, 2000L)
+                } else {
+                    onError("$msg（已自动重试 $maxRetries 次）")
+                }
             }
         }
 

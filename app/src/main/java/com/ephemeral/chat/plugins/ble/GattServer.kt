@@ -11,6 +11,7 @@ import android.bluetooth.BluetoothGattService
 import android.bluetooth.BluetoothProfile
 import android.content.Context
 import android.util.Log
+import com.ephemeral.chat.protocol.MessageFragmenter
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
@@ -28,6 +29,12 @@ class GattServer(private val context: Context) {
 
     /** 已连接设备列表，线程安全 */
     private val connectedDevices = ConcurrentHashMap<String, BluetoothDevice>()
+
+    /** 每个设备的独立分片重组器（避免多设备 msgId 冲突） */
+    private val fragmenters = ConcurrentHashMap<String, MessageFragmenter>()
+
+    /** 广播分片器：每片固定 20 字节，保证低 MTU 设备也能收到完整通知 */
+    private val broadcastFragmenter = MessageFragmenter(20)
 
     /** 消息接收回调 */
     var onMessageReceived: ((ByteArray) -> Unit)? = null
@@ -92,10 +99,12 @@ class GattServer(private val context: Context) {
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
                     connectedDevices[device.address] = device
+                    fragmenters.getOrPut(device.address) { MessageFragmenter(20) }
                     Log.i(TAG, "设备连接: ${device.address}, 当前连接数: ${connectedDevices.size}")
                 }
                 BluetoothProfile.STATE_DISCONNECTED -> {
                     connectedDevices.remove(device.address)
+                    fragmenters.remove(device.address)
                     Log.i(TAG, "设备断开: ${device.address}, 当前连接数: ${connectedDevices.size}")
                 }
             }
@@ -110,25 +119,17 @@ class GattServer(private val context: Context) {
             offset: Int,
             value: ByteArray,
         ) {
-            Log.d(TAG, "收到写入请求: ${device.address}, offset=$offset, size=${value.size}")
+            Log.d(TAG, "收到写入请求: ${device.address}, size=${value.size}")
 
-            if (offset > 0 && offset + value.size > characteristic.value?.size ?: 0) {
-                // 分片写入场景：拼接已有数据
-                val existing = characteristic.value ?: ByteArray(0)
-                val combined = ByteArray(existing.size + value.size)
-                System.arraycopy(existing, 0, combined, 0, existing.size)
-                System.arraycopy(value, 0, combined, existing.size, value.size)
-                characteristic.value = combined
-            } else {
-                characteristic.value = value
+            // 分片重组：Client 端每片带 3 字节头（msgId+seqFlag），收齐后回调完整消息
+            val reassembled = fragmenters[device.address]?.reassemble(value)
+            if (reassembled != null) {
+                onMessageReceived?.invoke(reassembled)
             }
 
             if (responseNeeded) {
                 server?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, ByteArray(0))
             }
-
-            // 回调消息
-            onMessageReceived?.invoke(value)
         }
 
         override fun onDescriptorWriteRequest(
@@ -149,16 +150,19 @@ class GattServer(private val context: Context) {
 
     /**
      * 向所有已连接 Client 发送通知。
+     * 数据经 MessageFragmenter 分片（每片 ≤ 20 字节），保证低 MTU 设备也能收到完整消息。
      *
      * @param data 要广播的数据
      */
     fun broadcast(data: ByteArray) {
         val notifChar = notificationCharacteristic ?: return
-        notifChar.value = data
 
-        for ((_, device) in connectedDevices) {
-            server?.notifyCharacteristicChanged(device, notifChar, false)
-            Log.d(TAG, "已向 ${device.address} 发送通知")
+        for (fragment in broadcastFragmenter.fragment(data)) {
+            notifChar.value = fragment
+            for ((_, device) in connectedDevices) {
+                server?.notifyCharacteristicChanged(device, notifChar, false)
+            }
+            Log.d(TAG, "广播通知分片 ${fragment.size} 字节")
         }
     }
 

@@ -92,7 +92,7 @@ class MessageFragmenter(private val mtu: Int = 247) {
 
         val payload = fragment.copyOfRange(3, fragment.size)
 
-        val buffer = reassemblyBuffer.getOrPut(msgId) { mutableMapOf() }
+        val buffer = reassemblyBuffer.getOrPut(msgId) { ConcurrentHashMap() }
         buffer[seq] = payload
 
         if (isLast) {
@@ -101,10 +101,6 @@ class MessageFragmenter(private val mtu: Int = 247) {
 
         // 检查是否所有分片都已到达
         if (isLastReceived[msgId] == true) {
-            // 等待一小段时间确保中间分片到达
-            // 这里同步检查：seq 0 到 lastSeq 是否都在
-            val lastSeq = (0 until 128).firstOrNull { buffer[it] == null && buffer.containsKey(it) }
-            // 简化：检查所有连续 seq 是否存在
             val totalFragments = seq + 1 // 最后一片的 seq + 1 = 总片数
             if (buffer.size >= totalFragments) {
                 // 重组

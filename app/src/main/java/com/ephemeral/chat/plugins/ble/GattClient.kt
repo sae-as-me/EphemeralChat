@@ -10,6 +10,7 @@ import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
 import android.content.Context
 import android.util.Log
+import com.ephemeral.chat.protocol.MessageFragmenter
 import java.util.UUID
 
 /**
@@ -29,6 +30,14 @@ class GattClient(private val context: Context) {
     /** 连接状态回调 */
     var onConnected: (() -> Unit)? = null
     var onDisconnected: (() -> Unit)? = null
+
+    /**
+     * 分片器：每片固定 20 字节（含 3 字节头），保证在任意 MTU（即使协商失败降为 23）下
+     * 消息都能完整送达 Server。Server 端按 msgId+seq 重组。
+     */
+    private val fragmenter = MessageFragmenter(20)
+    private val writeQueue = ArrayDeque<ByteArray>()
+    private var busy = false
 
     private val gattCallback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(bluetoothGatt: BluetoothGatt, status: Int, newState: Int) {
@@ -85,8 +94,13 @@ class GattClient(private val context: Context) {
             characteristic: BluetoothGattCharacteristic,
         ) {
             if (characteristic.uuid == UUID.fromString(BleConstants.NOTIFICATION_UUID)) {
-                Log.d(TAG, "收到通知, size=${characteristic.value?.size ?: 0}")
-                onNotification?.invoke(characteristic.value ?: ByteArray(0))
+                val fragment = characteristic.value ?: return
+                Log.d(TAG, "收到通知分片, size=${fragment.size}")
+                // Server 端分片发送，此处重组完整消息后回调
+                val completed = fragmenter.reassemble(fragment)
+                if (completed != null) {
+                    onNotification?.invoke(completed)
+                }
             }
         }
 
@@ -96,6 +110,10 @@ class GattClient(private val context: Context) {
             status: Int,
         ) {
             Log.d(TAG, "写入完成: status=$status")
+            // 发送队列中下一片（分片消息必须串行发送）
+            writeQueue.removeFirstOrNull()
+            busy = false
+            sendNextQueued()
         }
     }
 
@@ -120,6 +138,8 @@ class GattClient(private val context: Context) {
 
     /**
      * 写入数据到 Hub 的 command 特征值。
+     * 数据先经 MessageFragmenter 分片（每片 ≤ 20 字节），逐片串行写入，
+     * 保证在低 MTU 设备上也能完整送达。
      *
      * @param data 要写入的数据
      * @return true 表示写入请求已提交
@@ -133,15 +153,38 @@ class GattClient(private val context: Context) {
             return false
         }
 
-        char.value = data
-        char.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-        return currentGatt.writeCharacteristic(char)
+        val fragments = fragmenter.fragment(data)
+        writeQueue.clear()
+        writeQueue.addAll(fragments)
+        sendNextQueued()
+        return true
+    }
+
+    /** 串行发送队列中的下一片 */
+    private fun sendNextQueued() {
+        if (busy) return
+        val currentGatt = gatt ?: return
+        val char = commandChar ?: return
+        val next = writeQueue.firstOrNull() ?: return
+        busy = true
+        try {
+            char.value = next
+            char.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+            currentGatt.writeCharacteristic(char)
+        } catch (e: Exception) {
+            Log.e(TAG, "写入分片异常", e)
+            writeQueue.removeFirstOrNull()
+            busy = false
+            sendNextQueued()
+        }
     }
 
     /**
      * 断开 GATT 连接。
      */
     fun disconnect() {
+        writeQueue.clear()
+        busy = false
         gatt?.disconnect()
         gatt?.close()
         gatt = null

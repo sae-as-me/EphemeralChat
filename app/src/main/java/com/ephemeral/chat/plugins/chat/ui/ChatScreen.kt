@@ -139,6 +139,17 @@ fun ChatScreen(viewModel: ChatViewModel) {
                 .fillMaxSize()
                 .padding(padding),
         ) {
+            // 错误提示（如广播失败）显示在最上方
+            state.errorMessage?.let { error ->
+                Text(
+                    text = error,
+                    fontSize = adaptiveSp(12f),
+                    color = MaterialTheme.colorScheme.secondary,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(adaptiveDp(4f)),
+                )
+            }
+
             // 消息列表
             LazyColumn(
                 modifier = Modifier
