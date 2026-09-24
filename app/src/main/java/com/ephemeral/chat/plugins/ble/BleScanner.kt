@@ -32,12 +32,18 @@ class BleScanner(private val context: Context) {
     /**
      * 启动 BLE 扫描。
      *
+     * 匹配逻辑（双模式）：
+     * 1. 位置优先：广播中 codeHash ∈ targetHashes（9 邻域哈希）→ 强匹配
+     * 2. 纯 code 兑底：广播中 codeOnlyHash == 参数 codeOnlyHash（不依赖位置）→ 防位置缓存异常搜不到
+     *
      * @param targetHashes 目标邀请码哈希列表（9 邻域）
+     * @param codeOnlyHash 纯邀请码哈希（sha256(code) 前 4 字节）
      * @param onMatched 匹配成功回调（设备地址 + groupIdShort），匹配后自动停止扫描
      * @param onError 错误回调（蓝牙未开启 / 无权限 / 扫描失败 / 超时）
      */
     fun start(
         targetHashes: List<ByteArray>,
+        codeOnlyHash: ByteArray,
         onMatched: (deviceAddress: String, groupIdShort: ByteArray) -> Unit,
         onError: (String) -> Unit,
     ) {
@@ -97,21 +103,28 @@ class BleScanner(private val context: Context) {
                     ParcelUuid.fromString(BleConstants.ADVERTISE_SERVICE_UUID)
                 ) ?: return
 
-                if (serviceData.size < 8) return
+                if (serviceData.size < 12) return
 
-                // 前 4 字节为 codeHash
+                // 新格式（16 字节）：前 4 字节位置 codeHash，4-7 字节纯 codeOnlyHash，8-11 字节 groupIdShort
                 val codeHash = serviceData.copyOfRange(0, 4)
-                // 后 4 字节为 groupIdShort
-                val groupIdShort = serviceData.copyOfRange(4, 8)
+                val remoteCodeOnlyHash = serviceData.copyOfRange(4, 8)
+                val groupIdShort = serviceData.copyOfRange(8, 12)
 
-                // 匹配目标哈希
+                // 模式一：位置哈希匹配（9 邻域，强验证）
                 for (target in targetHashes) {
                     if (codeHash.contentEquals(target)) {
-                        Log.i(TAG, "匹配到目标设备: ${result.device.address}")
+                        Log.i(TAG, "位置哈希匹配到目标设备: ${result.device.address}")
                         stop()
                         onMatched(result.device.address, groupIdShort)
                         return
                     }
+                }
+
+                // 模式二：纯邀请码哈希兑底匹配（不依赖位置，兼容位置缓存陈旧/定位不准）
+                if (codeOnlyHash.isNotEmpty() && remoteCodeOnlyHash.contentEquals(codeOnlyHash)) {
+                    Log.i(TAG, "邀请码兑底匹配到目标设备: ${result.device.address}")
+                    stop()
+                    onMatched(result.device.address, groupIdShort)
                 }
             }
 

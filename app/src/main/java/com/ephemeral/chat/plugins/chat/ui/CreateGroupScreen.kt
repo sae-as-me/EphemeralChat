@@ -34,8 +34,8 @@ import com.ephemeral.chat.plugins.chat.ChatViewModel
 /**
  * 首页——创建/加入群聊入口。
  * - 无活跃群聊时显示创建/加入按钮
- * - 有活跃群聊（返回但不退出）时显示群聊列表卡片
- * - inviteCode 非空且为创建者时显示邀请码等待页
+ * - 已进入过聊天（返回但不退出）时显示群聊列表卡片
+ * - 创建中等待定位时显示邀请码等待页
  */
 @Composable
 fun CreateGroupScreen(viewModel: ChatViewModel) {
@@ -46,15 +46,19 @@ fun CreateGroupScreen(viewModel: ChatViewModel) {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        if (state.inviteCode.isEmpty() && state.groupId.isEmpty()) {
-            // ---- 首页：无活跃群聊，创建/加入入口 ----
-            HomeEntry(viewModel, state.nickname)
-        } else if (state.inviteCode.isNotEmpty() && state.groupId.isNotEmpty()) {
-            // ---- 创建者等待页：显示邀请码 ----
-            CreateWaitScreen(viewModel = viewModel, inviteCode = state.inviteCode)
-        } else {
-            // ---- 首页：有活跃群聊（返回但不退出），显示群聊列表 ----
-            ActiveGroupList(viewModel = viewModel)
+        when {
+            // 无活跃群聊：创建/加入入口
+            state.groupId.isEmpty() -> {
+                HomeEntry(viewModel, state.nickname)
+            }
+            // 已进入过聊天（返回但不退出）：显示群聊列表卡片
+            state.chatEntered -> {
+                ActiveGroupList(viewModel = viewModel)
+            }
+            // 创建过程中等待定位：显示邀请码等待页
+            else -> {
+                CreateWaitScreen(viewModel = viewModel, inviteCode = state.inviteCode)
+            }
         }
     }
 }
@@ -122,9 +126,9 @@ private fun CreateWaitScreen(viewModel: ChatViewModel, inviteCode: String) {
         Text("进入群聊", fontSize = adaptiveSp(16f))
     }
     Spacer(modifier = Modifier.height(adaptiveDp(16f)))
-    // 返回但不退出
-    Button(onClick = { viewModel.backToHomeKeepGroup() }) {
-        Text("返回", fontSize = adaptiveSp(14f))
+    // 取消创建（停止广播并回到干净首页）
+    Button(onClick = { viewModel.cancelGroupCreation() }) {
+        Text("取消创建", fontSize = adaptiveSp(14f))
     }
 }
 

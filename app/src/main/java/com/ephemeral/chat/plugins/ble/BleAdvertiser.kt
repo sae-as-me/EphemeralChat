@@ -29,11 +29,18 @@ class BleAdvertiser(private val context: Context) {
     /**
      * 启动 BLE 广播。
      *
-     * @param codeHash 4 字节邀请码哈希
+     * 广播 payload（16 字节 Service Data）：
+     * - bytes 0-3: codeHash（位置相关：sha256(code + geohash5)）
+     * - bytes 4-7: codeOnlyHash（纯邀请码：sha256(code)）——供扫描端兑底匹配，避免位置缓存异常导致搜不到
+     * - bytes 8-11: groupIdShort
+     * - bytes 12-15: 预留（全 0）
+     *
+     * @param codeHash 4 字节位置关联哈希
+     * @param codeOnlyHash 4 字节纯邀请码哈希
      * @param groupIdShort 4 字节群组 ID 短码
      * @param onError 错误回调（蓝牙未开启 / 无权限 / 广播失败）
      */
-    fun start(codeHash: ByteArray, groupIdShort: ByteArray, onError: (String) -> Unit) {
+    fun start(codeHash: ByteArray, codeOnlyHash: ByteArray, groupIdShort: ByteArray, onError: (String) -> Unit) {
         if (isAdvertising) {
             Log.w(TAG, "已在广播中，先停止旧广播")
             stop()
@@ -76,8 +83,12 @@ class BleAdvertiser(private val context: Context) {
             .setConnectable(true)
             .build()
 
-        // 广播数据：Service UUID + Service Data
-        val payload = codeHash + groupIdShort
+        // 广播数据：Service UUID + Service Data（16 字节，位置 hash + 纯 code hash + groupId）
+        val payload = ByteArray(16)
+        System.arraycopy(codeHash, 0, payload, 0, 4)
+        System.arraycopy(codeOnlyHash, 0, payload, 4, 4)
+        System.arraycopy(groupIdShort, 0, payload, 8, 4)
+        // bytes 12-15 预留，保持全 0
         val advertiseData = AdvertiseData.Builder()
             .addServiceUuid(ParcelUuid.fromString(BleConstants.ADVERTISE_SERVICE_UUID))
             .addServiceData(ParcelUuid.fromString(BleConstants.ADVERTISE_SERVICE_UUID), payload)

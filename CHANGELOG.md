@@ -3,15 +3,35 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: '4c01dc8f-6332-4e7a-b40f-8986ec768eea'
-  PropagateID: '4c01dc8f-6332-4e7a-b40f-8986ec768eea'
-  ReservedCode1: '191a09db-f232-4412-95f5-9413d397f2aa'
-  ReservedCode2: '191a09db-f232-4412-95f5-9413d397f2aa'
+  ProduceID: '279df05c-bc1f-4dfa-9a62-48226bde0dcf'
+  PropagateID: '279df05c-bc1f-4dfa-9a62-48226bde0dcf'
+  ReservedCode1: 'bcdb47de-87b2-4815-b1c3-971d05837730'
+  ReservedCode2: 'bcdb47de-87b2-4815-b1c3-971d05837730'
 ---
 
 # Changelog
 
 本项目所有重要变更记录于此文件。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
+
+## [0.2.3] - 2026-09-24
+
+### 修复
+
+- **"返回但不退出"后未显示群聊列表、返回按钮无反应**：`CreateGroupScreen` 分支判断从 `inviteCode/groupId` 改为基于 `chatEntered`，修复创建者/加入者两字段均非空导致永远命中邀请码等待页、群聊卡片分支不可达的死循环；等待页"返回"按钮改为「取消创建」，正确停止 BLE 并回到干净首页
+- **聊天界面人数始终为 0、消息不显示、发送消息闪退/无反应**：新增 `loadGroupData()` 通过 Room Flow 实时订阅成员与消息到 UI；`JOIN_ACK`、`enterChat`、`reenterGroup` 均触发数据加载；所有数据库与 BLE 操作统一经 `runDb` 与 try-catch 保护，数据库初始化失败等异常不再导致协程崩溃
+- **双机互测搜不到附近群聊**：`LocationPlugin.getCurrentLocation` 改为必回调（lastKnown 优先 → 单次更新 10s 超时回退 → 兜底坐标），解决荣耀8X 等无 lastKnown 且室内无 GPS fix 时 `joinGroup` 扫描永不启动、误报"未发现附近群聊"的问题；广播数据升级为 16 字节（位置 hash + 纯邀请码 hash + groupId），扫描端双模式匹配——位置哈希优先、纯邀请码哈希兜底，防止位置缓存陈旧/定位不准导致误匹配
+
+## [0.2.2] - 2026-09-24
+
+### 修复
+
+- **旧版本数据库升级闪退**：v0.2 固定 IV 后密钥变化，新密码打开旧加密库导致 SQLCipher 解密失败；DatabaseManager 打开失败自动删除重建（符合临时数据不持久定位）；KeyManager 增加 Keystore 不可用回退固定 SHA-256 密码（兼容 EMUI/荣耀 ROM）；Application.onCreate 插件注册全 try-catch、SharedStateManager 异步初始化防低端机 ANR；新增全局崩溃处理器写入 `crash_log.txt`
+
+## [0.2.1] - 2026-09-24
+
+### 修复
+
+- **启动白屏（ANR）**：`SharedStateManager.init()` 用 `runBlocking { dataStore.data.collect{} }` 在主线程收集永不结束的 Flow 导致永久阻塞；改为 `first()` 只读一次
 
 ## [0.2] - 2026-09-24
 

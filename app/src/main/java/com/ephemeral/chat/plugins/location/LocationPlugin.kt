@@ -96,67 +96,101 @@ class LocationPlugin : IPlugin {
      * 优先用 getLastKnownLocation(GPS_PROVIDER)，为 null 则 requestSingleUpdate。
      * 回调在主线程。
      *
+     * 重要：本方法保证一定会回调 callback（无论是否拿到精确定位）：
+     * - 有最后已知位置 → 立即回调
+     * - 单次定位 10s 超时 → 回退到最后已知位置
+     * - 无任何位置 → 回调默认坐标 (0,0) 并打日志
+     * 这样可确保创建/加入群聊流程不被定位阻塞（部分国产 ROM 无 lastKnown 且室内无 GPS fix）。
+     *
      * @param callback 回调函数，参数为经纬度
      */
     fun getCurrentLocation(callback: (Double, Double) -> Unit) {
         if (!hasLocationPermission()) {
-            Log.w(TAG, "无定位权限，无法获取位置")
+            Log.w(TAG, "无定位权限，使用兜底位置 (0,0)")
+            callback(0.0, 0.0)
             return
         }
 
         try {
-            // 优先使用 GPS_PROVIDER 的最后已知位置
-            val lastKnown = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER)
+            val lastKnown = getLastKnownLocationOrNull()
             if (lastKnown != null) {
                 Log.d(TAG, "使用最后已知位置: ${lastKnown.latitude}, ${lastKnown.longitude}")
                 callback(lastKnown.latitude, lastKnown.longitude)
                 return
             }
 
-            // 回退到 NETWORK_PROVIDER
-            val networkKnown = locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
-            if (networkKnown != null) {
-                Log.d(TAG, "使用网络位置: ${networkKnown.latitude}, ${networkKnown.longitude}")
-                callback(networkKnown.latitude, networkKnown.longitude)
-                return
-            }
-
-            // 最后手段：请求单次更新
-            requestSingleUpdate(callback)
+            // 无缓存位置：请求单次更新，超时后兜底回调
+            requestSingleLocationWithFallback(callback)
         } catch (e: SecurityException) {
-            Log.e(TAG, "获取位置时权限被拒绝", e)
+            Log.e(TAG, "获取位置时权限被拒绝，使用兜底位置 (0,0)", e)
+            callback(0.0, 0.0)
         }
     }
 
     /**
-     * 请求单次位置更新。超时 10s 后回退到 NETWORK_PROVIDER。
+     * 获取最后已知位置（GPS 优先，回退 NETWORK）。可能为 null。
      */
-    private fun requestSingleUpdate(callback: (Double, Double) -> Unit) {
+    private fun getLastKnownLocationOrNull(): Location? {
+        return try {
+            locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER)
+                ?: locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
+        } catch (e: SecurityException) {
+            Log.e(TAG, "读取最后已知位置权限被拒绝", e)
+            null
+        }
+    }
+
+    /**
+     * 请求单次位置更新，超时 10s 后兜底回调（保证不会永久阻塞）。
+     */
+    private fun requestSingleLocationWithFallback(callback: (Double, Double) -> Unit) {
         try {
+            var done = false
             val listener = object : LocationListener {
                 override fun onLocationChanged(location: Location) {
+                    if (done) return
+                    done = true
                     Log.d(TAG, "单次定位成功: ${location.latitude}, ${location.longitude}")
                     callback(location.latitude, location.longitude)
-                    locationManager.removeUpdates(this)
+                    try { locationManager.removeUpdates(this) } catch (e: Exception) {}
                 }
                 override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
                 override fun onProviderEnabled(provider: String) {}
                 override fun onProviderDisabled(provider: String) {}
             }
 
-            if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
+            val gpsEnabled = locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)
+            val networkEnabled = locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
+            if (gpsEnabled) {
                 locationManager.requestSingleUpdate(LocationManager.GPS_PROVIDER, listener, Looper.getMainLooper())
-            } else if (locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
+            } else if (networkEnabled) {
                 locationManager.requestSingleUpdate(LocationManager.NETWORK_PROVIDER, listener, Looper.getMainLooper())
+            } else {
+                // 定位开关关闭：立即兜底，不等 10s
+                Log.w(TAG, "定位服务未开启，使用兜底位置 (0,0)")
+                done = true
+                callback(0.0, 0.0)
+                return
             }
 
-            // 10s 超时移除
+            // 10s 超时兜底：未定位成功则回退最后已知位置，再没有则默认坐标
             scope.launch {
                 delay(10_000L)
-                locationManager.removeUpdates(listener)
+                if (done) return@launch
+                done = true
+                try { locationManager.removeUpdates(listener) } catch (_: Exception) {}
+                val fallback = getLastKnownLocationOrNull()
+                if (fallback != null) {
+                    Log.w(TAG, "单次定位超时，回退最后已知位置: ${fallback.latitude}, ${fallback.longitude}")
+                    callback(fallback.latitude, fallback.longitude)
+                } else {
+                    Log.w(TAG, "单次定位超时且无缓存位置，使用兜底坐标 (0,0)")
+                    callback(0.0, 0.0)
+                }
             }
         } catch (e: SecurityException) {
-            Log.e(TAG, "请求单次定位权限被拒绝", e)
+            Log.e(TAG, "请求单次定位权限被拒绝，使用兜底位置 (0,0)", e)
+            callback(0.0, 0.0)
         }
     }
 

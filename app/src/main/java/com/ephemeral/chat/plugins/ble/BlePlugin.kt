@@ -75,8 +75,8 @@ class BlePlugin : IPlugin {
 
     // ---- 广播 ----
 
-    fun startAdvertising(codeHash: ByteArray, groupIdShort: ByteArray, onError: (String) -> Unit) {
-        advertiser?.start(codeHash, groupIdShort, onError)
+    fun startAdvertising(codeHash: ByteArray, codeOnlyHash: ByteArray, groupIdShort: ByteArray, onError: (String) -> Unit) {
+        advertiser?.start(codeHash, codeOnlyHash, groupIdShort, onError)
     }
 
     fun stopAdvertising() {
@@ -87,10 +87,11 @@ class BlePlugin : IPlugin {
 
     fun startScanning(
         targetHashes: List<ByteArray>,
+        codeOnlyHash: ByteArray,
         onMatched: (deviceAddress: String, groupIdShort: ByteArray) -> Unit,
         onError: (String) -> Unit,
     ) {
-        scanner?.start(targetHashes, onMatched, onError)
+        scanner?.start(targetHashes, codeOnlyHash, onMatched, onError)
     }
 
     fun stopScanning() {
