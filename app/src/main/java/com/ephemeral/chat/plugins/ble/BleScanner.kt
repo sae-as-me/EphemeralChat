@@ -1,5 +1,6 @@
 package com.ephemeral.chat.plugins.ble
 
+import android.Manifest
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
 import android.bluetooth.le.ScanCallback
@@ -7,12 +8,18 @@ import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
+import android.content.pm.PackageManager
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.ParcelUuid
 import android.util.Log
+import androidx.core.content.ContextCompat
 
 /**
  * BLE 扫描管理器。
  * 职责：扫描 BLE 广播，过滤匹配的 Service UUID，回调匹配结果。
+ * 修复：增加权限/蓝牙状态检查与错误回调；扫描需在主线程执行；匹配后自动停止。
  */
 class BleScanner(private val context: Context) {
 
@@ -26,11 +33,13 @@ class BleScanner(private val context: Context) {
      * 启动 BLE 扫描。
      *
      * @param targetHashes 目标邀请码哈希列表（9 邻域）
-     * @param onMatched 匹配成功回调，参数为设备地址和 groupIdShort
+     * @param onMatched 匹配成功回调（设备地址 + groupIdShort），匹配后自动停止扫描
+     * @param onError 错误回调（蓝牙未开启 / 无权限 / 扫描失败 / 超时）
      */
     fun start(
         targetHashes: List<ByteArray>,
         onMatched: (deviceAddress: String, groupIdShort: ByteArray) -> Unit,
+        onError: (String) -> Unit,
     ) {
         if (isScanning) {
             Log.w(TAG, "已在扫描中，先停止旧扫描")
@@ -40,14 +49,34 @@ class BleScanner(private val context: Context) {
         val bluetoothManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
         bluetoothAdapter = bluetoothManager?.adapter
 
-        if (bluetoothAdapter == null || bluetoothAdapter?.isEnabled != true) {
-            Log.e(TAG, "蓝牙未开启或设备不支持蓝牙")
+        // 检查蓝牙是否开启
+        if (bluetoothAdapter == null) {
+            Log.e(TAG, "设备不支持蓝牙")
+            onError("设备不支持蓝牙")
+            return
+        }
+        if (bluetoothAdapter?.isEnabled != true) {
+            Log.w(TAG, "蓝牙未开启")
+            onError("请先开启蓝牙")
+            return
+        }
+
+        // 检查扫描权限（Android 12+ 需要 BLUETOOTH_SCAN，旧版本需要 ACCESS_FINE_LOCATION）
+        val scanPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            Manifest.permission.BLUETOOTH_SCAN
+        } else {
+            Manifest.permission.ACCESS_FINE_LOCATION
+        }
+        if (ContextCompat.checkSelfPermission(context, scanPermission) != PackageManager.PERMISSION_GRANTED) {
+            Log.w(TAG, "缺少扫描权限: $scanPermission")
+            onError("缺少蓝牙扫描权限，请在系统设置中开启")
             return
         }
 
         val scanner = bluetoothAdapter?.bluetoothLeScanner
         if (scanner == null) {
             Log.e(TAG, "无法获取 BluetoothLeScanner")
+            onError("无法获取蓝牙扫描器")
             return
         }
 
@@ -79,6 +108,7 @@ class BleScanner(private val context: Context) {
                 for (target in targetHashes) {
                     if (codeHash.contentEquals(target)) {
                         Log.i(TAG, "匹配到目标设备: ${result.device.address}")
+                        stop()
                         onMatched(result.device.address, groupIdShort)
                         return
                     }
@@ -88,23 +118,35 @@ class BleScanner(private val context: Context) {
             override fun onScanFailed(errorCode: Int) {
                 Log.e(TAG, "BLE 扫描失败，错误码: $errorCode")
                 isScanning = false
+                onError("蓝牙扫描失败（错误码 $errorCode）")
             }
         }
 
         scanCallback = callback
-        scanner.startScan(listOf(filter), settings, callback)
-        isScanning = true
-        Log.i(TAG, "BLE 扫描已启动，目标哈希数: ${targetHashes.size}")
+        // startScan 必须在主线程调用
+        Handler(Looper.getMainLooper()).post {
+            try {
+                scanner.startScan(listOf(filter), settings, callback)
+                isScanning = true
+                Log.i(TAG, "BLE 扫描已启动，目标哈希数: ${targetHashes.size}")
 
-        // 30s 超时自动停止
-        val handler = android.os.Handler(android.os.Looper.getMainLooper())
-        scanTimeoutRunnable = Runnable {
-            if (isScanning) {
-                Log.i(TAG, "BLE 扫描超时（30s），自动停止")
-                stop()
+                // 30s 超时自动停止并通知
+                scanTimeoutRunnable = Runnable {
+                    if (isScanning) {
+                        Log.i(TAG, "BLE 扫描超时（30s），自动停止")
+                        stop()
+                        onError("未发现附近群聊，请确认对方已创建群聊且蓝牙已开启")
+                    }
+                }
+                Handler(Looper.getMainLooper()).postDelayed(scanTimeoutRunnable!!, 30_000L)
+            } catch (e: SecurityException) {
+                Log.e(TAG, "启动扫描权限被拒绝", e)
+                onError("缺少蓝牙扫描权限，请在权限设置中开启")
+            } catch (e: Exception) {
+                Log.e(TAG, "启动扫描异常", e)
+                onError("蓝牙扫描启动失败: ${e.message}")
             }
         }
-        handler.postDelayed(scanTimeoutRunnable!!, 30_000L)
     }
 
     /**
@@ -120,7 +162,7 @@ class BleScanner(private val context: Context) {
 
         // 移除超时任务
         scanTimeoutRunnable?.let {
-            android.os.Handler(android.os.Looper.getMainLooper()).removeCallbacks(it)
+            Handler(Looper.getMainLooper()).removeCallbacks(it)
         }
         scanTimeoutRunnable = null
 

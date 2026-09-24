@@ -34,6 +34,9 @@ class EphemeralChatApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // 初始化全局共享状态（主题/昵称持久化）
+        SharedStateManager.init(this)
+
         pluginRegistry = pluginRegistryProvider.get()
 
         // 完整注册顺序（拓扑排序保证依赖正确）

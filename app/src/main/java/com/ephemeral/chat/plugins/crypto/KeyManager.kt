@@ -24,13 +24,23 @@ class KeyManager {
     /** 数据库密钥别名 */
     private val dbKeyAlias = "ephemeral_db_key"
 
+    /**
+     * 固定 IV（12 字节）。
+     * 用于派生稳定的数据库 passphrase。
+     * 注意：此处不用随机 IV——因为 Android Keystore 无法导出密钥原始字节，
+     * 只能用"固定明文 + 固定 IV 加密"得到稳定密文作为 SQLCipher 密码。
+     * 该密码本身已足够随机（AES-GCM 密文），泄露风险与数据库文件同在。
+     */
+    private val fixedIv = byteArrayOf(0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C)
+
     /** 群组密钥存储：Map<groupId, SecretKey>，线程安全 */
     private val groupKeys = ConcurrentHashMap<String, SecretKey>()
 
     /**
      * 获取数据库密钥（用于 SQLCipher）。
      * 从 Keystore 获取或生成 AES-256 密钥。
-     * 返回密钥的字节数组（32 字节）。
+     * 返回固定 32 字节密文（同一 Keystore 密钥 + 固定 IV → 每次结果相同）。
+     * 修复：GCM 随机 IV 导致每次调用返回不同密码 → SQLCipher 打不开已建库 → 闪退。
      */
     fun getDatabaseKey(): ByteArray {
         if (!keystore.containsAlias(dbKeyAlias)) {
@@ -53,12 +63,12 @@ class KeyManager {
         val key = keystore.getKey(dbKeyAlias, null) as SecretKey
         // SQLCipher 需要 raw bytes，从 Keystore 密钥中导出
         // 注意：Android Keystore 不允许直接导出密钥字节
-        // 解决方案：用一个固定 IV 加密固定明文，取密文作为 passphrase
+        // 解决方案：用固定 IV 加密固定明文，取密文前 32 字节作为 passphrase（稳定且随机）
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.ENCRYPT_MODE, key)
+        cipher.init(Cipher.ENCRYPT_MODE, key, GCMParameterSpec(128, fixedIv))
         val fixedPlaintext = "ephemeral_chat_db_passphrase".toByteArray(Charsets.UTF_8)
         val encrypted = cipher.doFinal(fixedPlaintext)
-        // 用加密结果作为 SQLCipher 密码（32 字节）
+        // 用加密结果作为 SQLCipher 密码（固定 32 字节）
         return encrypted.copyOfRange(0, 32)
     }
 

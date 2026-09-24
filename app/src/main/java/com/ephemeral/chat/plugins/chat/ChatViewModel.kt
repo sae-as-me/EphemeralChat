@@ -47,10 +47,10 @@ class ChatViewModel @Inject constructor(
     /** 本机 UUID */
     private val myUuid: String = UUID.randomUUID().toString()
 
-    /** 当前昵称——初始化时同步到 SharedStateManager 供 Profile 页面读取 */
-    private var nickname: String = NicknameGenerator.generate().also {
-        SharedStateManager.setNickname(it)
-    }
+    /** 当前昵称——优先使用 SharedStateManager 中已持久化的昵称，无则生成随机昵称 */
+    private var nickname: String = SharedStateManager.nickname.value
+        .ifEmpty { NicknameGenerator.generate() }
+        .also { SharedStateManager.setNickname(it) }
 
     /** UI 状态 */
     data class ChatUiState(
@@ -116,7 +116,10 @@ class ChatViewModel @Inject constructor(
 
             viewModelScope.launch {
                 // 启动 BLE 广播
-                blePlugin.startAdvertising(codeHash, groupIdShort)
+                blePlugin.startAdvertising(codeHash, groupIdShort) { errorMsg ->
+                    _uiState.value = _uiState.value.copy(errorMessage = errorMsg)
+                    Log.e(TAG, "广播失败: $errorMsg")
+                }
 
                 // 启动 GATT Server 接收消息
                 blePlugin.startGattServer { data ->
@@ -201,40 +204,85 @@ class ChatViewModel @Inject constructor(
                 cryptoPlugin.sha256(code + hash).copyOfRange(0, 4)
             }
 
-            blePlugin.startScanning(codeHashes) { deviceAddress, groupIdShort ->
-                _uiState.value = _uiState.value.copy(connectionStatus = ConnectionStatus.Connecting)
+            blePlugin.startScanning(
+                codeHashes,
+                { deviceAddress, groupIdShort ->
+                    _uiState.value = _uiState.value.copy(connectionStatus = ConnectionStatus.Connecting)
 
-                // 距离校验
-                locationPlugin.getCurrentLocation { lat2, lon2 ->
-                    val distance = GeohashUtils.distanceMeters(lat, lon, lat2, lon2)
-                    if (distance > 100.0) {
-                        _uiState.value = _uiState.value.copy(
-                            errorMessage = "距离过远（${distance.toInt()}米），请靠近后重试",
-                            connectionStatus = ConnectionStatus.Disconnected,
-                        )
-                        return@getCurrentLocation
-                    }
-
-                    // 连接 Hub
-                    blePlugin.connectAsClient(deviceAddress) { data ->
-                        handleReceivedMessage(String(data, Charsets.UTF_8))
-                    }
-
-                    // 发送 join 消息
+                    // 加入者生成自己的本地 groupId（与 Hub 的短码关联）
+                    val localGroupId = "join_" + UUID.randomUUID().toString().take(8)
+                    _uiState.value = _uiState.value.copy(
+                        groupId = localGroupId,
+                        isHub = false,
+                        inviteCode = code,
+                    )
+                    val storagePlugin = registry.getPlugin<StoragePlugin>("storage")
                     viewModelScope.launch {
-                        delay(1000) // 等待连接建立
-                        val joinMsg = ChatMessage(
-                            t = ProtocolMessageType.JOIN.code,
-                            u = myUuid.take(4),
-                            n = nickname,
-                            g = String(groupIdShort, Charsets.UTF_8),
-                            ts = System.currentTimeMillis(),
-                            mid = UUID.randomUUID().toString(),
+                        // 保存群组信息（加入者视角）
+                        storagePlugin?.getGroupDao()?.upsert(
+                            GroupEntity(
+                                groupId = localGroupId,
+                                code = code,
+                                hubUuid = deviceAddress,
+                                isHub = false,
+                                createdAt = System.currentTimeMillis(),
+                                memberCount = 1,
+                                status = GroupStatus.ACTIVE,
+                            )
                         )
-                        blePlugin.writeToHub(joinMsg.toJson().toByteArray())
+                        // 保存自己为成员
+                        storagePlugin?.getMemberDao()?.upsert(
+                            MemberEntity(
+                                memberUuid = myUuid,
+                                groupId = localGroupId,
+                                nickname = nickname,
+                                isSelf = true,
+                                status = MemberStatus.ACTIVE,
+                                lastHeartbeat = System.currentTimeMillis(),
+                                joinedAt = System.currentTimeMillis(),
+                            )
+                        )
                     }
-                }
-            }
+
+                    // 距离校验
+                    locationPlugin.getCurrentLocation { lat2, lon2 ->
+                        val distance = GeohashUtils.distanceMeters(lat, lon, lat2, lon2)
+                        if (distance > 100.0) {
+                            _uiState.value = _uiState.value.copy(
+                                errorMessage = "距离过远（${distance.toInt()}米），请靠近后重试",
+                                connectionStatus = ConnectionStatus.Disconnected,
+                            )
+                            return@getCurrentLocation
+                        }
+
+                        // 连接 Hub
+                        blePlugin.connectAsClient(deviceAddress) { data ->
+                            handleReceivedMessage(String(data, Charsets.UTF_8))
+                        }
+
+                        // 发送 join 消息
+                        viewModelScope.launch {
+                            delay(1000) // 等待连接建立
+                            val joinMsg = ChatMessage(
+                                t = ProtocolMessageType.JOIN.code,
+                                u = myUuid.take(4),
+                                n = nickname,
+                                g = String(groupIdShort, Charsets.UTF_8),
+                                ts = System.currentTimeMillis(),
+                                mid = UUID.randomUUID().toString(),
+                            )
+                            blePlugin.writeToHub(joinMsg.toJson().toByteArray())
+                        }
+                    }
+                },
+                { errorMsg ->
+                    _uiState.value = _uiState.value.copy(
+                        errorMessage = errorMsg,
+                        connectionStatus = ConnectionStatus.Disconnected,
+                    )
+                    Log.e(TAG, "扫描失败: $errorMsg")
+                },
+            )
         }
     }
 
@@ -635,6 +683,29 @@ class ChatViewModel @Inject constructor(
     fun backToHome() {
         _uiState.value = _uiState.value.copy(screen = Screen.Home)
     }
+
+    /**
+     * 返回首页但不退出群聊。
+     * 保留群组状态（groupId/inviteCode/isHub），首页显示群聊列表。
+     */
+    fun backToHomeKeepGroup() {
+        _uiState.value = _uiState.value.copy(screen = Screen.Home)
+    }
+
+    /**
+     * 从首页群聊列表重新进入聊天。
+     */
+    fun reenterGroup() {
+        val current = _uiState.value
+        if (current.groupId.isNotEmpty()) {
+            _uiState.value = current.copy(screen = Screen.Chat)
+        }
+    }
+
+    /**
+     * 是否处于活跃群聊中（groupId 非空即认为有群聊）。
+     */
+    fun hasActiveGroup(): Boolean = _uiState.value.groupId.isNotEmpty()
 
     /**
      * 清除错误消息。

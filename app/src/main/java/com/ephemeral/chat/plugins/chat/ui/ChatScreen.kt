@@ -2,6 +2,7 @@ package com.ephemeral.chat.plugins.chat.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -15,9 +16,14 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ExitToApp
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Group
-import androidx.compose.material.icons.filled.Logout
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -25,6 +31,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -35,7 +42,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.unit.dp
 import com.ephemeral.chat.core.ui.adaptive.adaptiveDp
 import com.ephemeral.chat.core.ui.adaptive.adaptiveSp
 import com.ephemeral.chat.plugins.chat.ChatViewModel
@@ -44,11 +50,16 @@ import com.ephemeral.chat.plugins.storage.entity.MessageType
 
 /**
  * 聊天主界面。
+ * 右上角为"更多"菜单：
+ * - 返回但不退出：回到首页，群聊保留在列表
+ * - 退出当前群聊：二次确认后退出
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatScreen(viewModel: ChatViewModel) {
     val state by viewModel.uiState.collectAsStateLifecycle()
+    var menuExpanded by remember { mutableStateOf(false) }
+    var showExitDialog by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
@@ -68,6 +79,7 @@ fun ChatScreen(viewModel: ChatViewModel) {
                     }
                 },
                 actions = {
+                    // 成员列表
                     IconButton(onClick = { viewModel.showMembers() }) {
                         Icon(
                             Icons.Default.Group,
@@ -75,14 +87,48 @@ fun ChatScreen(viewModel: ChatViewModel) {
                             modifier = Modifier.size(adaptiveDp(24f)),
                         )
                     }
-                    // 退出群聊按钮
-                    IconButton(onClick = { viewModel.leaveGroup() }) {
-                        Icon(
-                            Icons.Default.Logout,
-                            contentDescription = "退出群聊",
-                            modifier = Modifier.size(adaptiveDp(24f)),
-                            tint = MaterialTheme.colorScheme.secondary,
-                        )
+                    // 更多菜单（竖排省略号）
+                    Box {
+                        IconButton(onClick = { menuExpanded = true }) {
+                            Icon(
+                                Icons.Default.MoreVert,
+                                contentDescription = "更多",
+                                modifier = Modifier.size(adaptiveDp(24f)),
+                            )
+                        }
+                        DropdownMenu(
+                            expanded = menuExpanded,
+                            onDismissRequest = { menuExpanded = false },
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("返回但不退出", fontSize = adaptiveSp(14f)) },
+                                onClick = {
+                                    menuExpanded = false
+                                    viewModel.backToHomeKeepGroup()
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Default.ArrowBack,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(adaptiveDp(20f)),
+                                    )
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("退出当前群聊", fontSize = adaptiveSp(14f)) },
+                                onClick = {
+                                    menuExpanded = false
+                                    showExitDialog = true
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.AutoMirrored.Filled.ExitToApp,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(adaptiveDp(20f)),
+                                    )
+                                },
+                            )
+                        }
                     }
                 },
             )
@@ -137,6 +183,33 @@ fun ChatScreen(viewModel: ChatViewModel) {
                 }
             }
         }
+    }
+
+    // 退出群聊二次确认对话框
+    if (showExitDialog) {
+        AlertDialog(
+            onDismissRequest = { showExitDialog = false },
+            title = { Text("退出当前群聊", fontSize = adaptiveSp(16f)) },
+            text = {
+                Text(
+                    "确定要退出当前群聊吗？退出后将清除本地聊天记录，如需再次加入需重新输入邀请码。",
+                    fontSize = adaptiveSp(14f),
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showExitDialog = false
+                    viewModel.leaveGroup()
+                }) {
+                    Text("退出", fontSize = adaptiveSp(14f), color = MaterialTheme.colorScheme.secondary)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showExitDialog = false }) {
+                    Text("取消", fontSize = adaptiveSp(14f))
+                }
+            },
+        )
     }
 }
 
