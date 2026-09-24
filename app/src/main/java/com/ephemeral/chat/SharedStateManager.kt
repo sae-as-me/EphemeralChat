@@ -10,6 +10,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 
@@ -46,18 +47,16 @@ object SharedStateManager {
     /**
      * 初始化——从 DataStore 读取持久化的主题和昵称。
      * 须在 Application.onCreate 中调用一次。
+     * 注意：只读取一次（first），不能用 collect（无限流会永久阻塞主线程导致白屏）。
      */
     fun init(context: Context) {
         if (initialized) return
         initialized = true
         appContext = context.applicationContext
 
-        runBlocking {
-            appContext.dataStore.data.collect { prefs ->
-                _isDarkTheme.value = prefs[KEY_DARK_THEME] ?: true
-                _nickname.value = prefs[KEY_NICKNAME] ?: ""
-            }
-        }
+        val prefs = runBlocking { appContext.dataStore.data.first() }
+        _isDarkTheme.value = prefs[KEY_DARK_THEME] ?: true
+        _nickname.value = prefs[KEY_NICKNAME] ?: ""
         android.util.Log.i(TAG, "初始化完成: darkTheme=${_isDarkTheme.value}, nickname=${_nickname.value}")
     }
 
