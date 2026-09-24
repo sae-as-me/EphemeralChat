@@ -148,7 +148,7 @@ fun ChatScreen(viewModel: ChatViewModel) {
                 verticalArrangement = Arrangement.spacedBy(adaptiveDp(4f)),
             ) {
                 items(state.messages) { msg ->
-                    MessageBubble(msg, msg.senderUuid == state.nickname)
+                    MessageBubble(msg, msg.senderUuid == state.myUuidShort)
                 }
             }
 

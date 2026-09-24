@@ -3,15 +3,23 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: '279df05c-bc1f-4dfa-9a62-48226bde0dcf'
-  PropagateID: '279df05c-bc1f-4dfa-9a62-48226bde0dcf'
-  ReservedCode1: 'bcdb47de-87b2-4815-b1c3-971d05837730'
-  ReservedCode2: 'bcdb47de-87b2-4815-b1c3-971d05837730'
+  ProduceID: '67404c95-a4b4-4808-b7d6-c579e52fad64'
+  PropagateID: '67404c95-a4b4-4808-b7d6-c579e52fad64'
+  ReservedCode1: 'a4511c61-634b-4fa4-9694-8c978fb9da65'
+  ReservedCode2: 'a4511c61-634b-4fa4-9694-8c978fb9da65'
 ---
 
 # Changelog
 
 本项目所有重要变更记录于此文件。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
+
+## [0.2.4] - 2026-09-24
+
+### 修复
+
+- **成员列表不完整 / 人数不正确**：Client 端从未收到其他成员信息——Hub 从不向 Client 同步成员。新增 `MEMBER_SYNC` 协议消息，Hub 在收到 JOIN 后查询全量成员并逐条广播同步，Client 收到后更新本地成员表，Room Flow 自动刷新 UI
+- **消息气泡左右不分**：`ChatScreen` 的 `isMine` 判断错误地用 `msg.senderUuid == state.nickname`（UUID 与昵称比较），改为 `msg.senderUuid == state.myUuidShort`
+- **UUID 不一致**：自己存 `myUuid`（36 字符）、别人存 `msg.u`（4 字符截断），导致 `getById` 永远查不到自己。统一全链路使用 `myUuidShort`（4 位短码）作为 memberUuid / senderUuid
 
 ## [0.2.3] - 2026-09-24
 

@@ -48,6 +48,9 @@ class ChatViewModel @Inject constructor(
     /** 本机 UUID */
     private val myUuid: String = UUID.randomUUID().toString()
 
+    /** 本机 UUID 短码（4 位），用于协议传输与本地成员存储的主键，保证自consistent */
+    private val myUuidShort: String = myUuid.take(4)
+
     /** 当前昵称——优先使用 SharedStateManager 中已持久化的昵称，无则生成随机昵称 */
     private var nickname: String = SharedStateManager.nickname.value
         .ifEmpty { NicknameGenerator.generate() }
@@ -63,6 +66,7 @@ class ChatViewModel @Inject constructor(
         val inviteCode: String = "",
         val groupId: String = "",
         val nickname: String = "",
+        val myUuidShort: String = "",
         val messages: List<MessageEntity> = emptyList(),
         val members: List<MemberEntity> = emptyList(),
         val isHub: Boolean = false,
@@ -75,7 +79,7 @@ class ChatViewModel @Inject constructor(
     enum class Screen { Home, Create, Join, Chat, Members }
     enum class ConnectionStatus { Disconnected, Scanning, Connecting, Connected, Reconnecting }
 
-    private val _uiState = MutableStateFlow(ChatUiState(nickname = nickname))
+    private val _uiState = MutableStateFlow(ChatUiState(nickname = nickname, myUuidShort = myUuidShort))
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
 
     init {
@@ -155,7 +159,7 @@ class ChatViewModel @Inject constructor(
 
                 // 存储自己为成员
                 val selfMember = MemberEntity(
-                    memberUuid = myUuid,
+                    memberUuid = myUuidShort,
                     groupId = groupId,
                     nickname = nickname,
                     isSelf = true,
@@ -172,7 +176,7 @@ class ChatViewModel @Inject constructor(
                     sendHeartbeat = {
                         val hbMsg = ChatMessage(
                             t = ProtocolMessageType.HB.code,
-                            u = myUuid.take(4),
+                            u = myUuidShort,
                             g = groupId.take(4),
                             ts = System.currentTimeMillis(),
                         )
@@ -255,7 +259,7 @@ class ChatViewModel @Inject constructor(
                         // 保存自己为成员
                         sp.getMemberDao().upsert(
                             MemberEntity(
-                                memberUuid = myUuid,
+                                memberUuid = myUuidShort,
                                 groupId = localGroupId,
                                 nickname = nickname,
                                 isSelf = true,
@@ -288,7 +292,7 @@ class ChatViewModel @Inject constructor(
                                 delay(1000) // 等待连接建立
                                 val joinMsg = ChatMessage(
                                     t = ProtocolMessageType.JOIN.code,
-                                    u = myUuid.take(4),
+                                    u = myUuidShort,
                                     n = nickname,
                                     g = String(groupIdShort, Charsets.UTF_8),
                                     ts = System.currentTimeMillis(),
@@ -339,7 +343,7 @@ class ChatViewModel @Inject constructor(
 
         val chatMsg = ChatMessage(
             t = ProtocolMessageType.MSG.code,
-            u = myUuid.take(4),
+            u = myUuidShort,
             n = nickname,
             c = encryptedContent,
             g = groupId.take(4),
@@ -352,7 +356,7 @@ class ChatViewModel @Inject constructor(
             val msgEntity = MessageEntity(
                 msgId = msgId,
                 groupId = groupId,
-                senderUuid = myUuid,
+                senderUuid = myUuidShort,
                 senderName = nickname,
                 content = content, // 本地存明文
                 type = MessageType.TEXT,
@@ -396,7 +400,7 @@ class ChatViewModel @Inject constructor(
 
         val nickMsg = ChatMessage(
             t = ProtocolMessageType.NICK.code,
-            u = myUuid.take(4),
+            u = myUuidShort,
             n = newName,
             g = groupId.take(4),
             ts = System.currentTimeMillis(),
@@ -405,7 +409,7 @@ class ChatViewModel @Inject constructor(
 
         // 更新本地成员
         runDb {
-            val member = storagePlugin.getMemberDao().getById(myUuid, groupId)
+            val member = storagePlugin.getMemberDao().getById(myUuidShort, groupId)
             if (member != null) {
                 storagePlugin.getMemberDao().upsert(member.copy(nickname = newName))
             }
@@ -441,7 +445,7 @@ class ChatViewModel @Inject constructor(
             try {
                 val leaveMsg = ChatMessage(
                     t = ProtocolMessageType.LEAVE.code,
-                    u = myUuid.take(4),
+                    u = myUuidShort,
                     g = groupId.take(4),
                     ts = System.currentTimeMillis(),
                 )
@@ -476,7 +480,7 @@ class ChatViewModel @Inject constructor(
             }
 
             // 回到首页
-            _uiState.value = ChatUiState(nickname = nickname)
+            _uiState.value = ChatUiState(nickname = nickname, myUuidShort = myUuidShort)
             Log.i(TAG, "已退出群聊")
         }
     }
@@ -497,7 +501,7 @@ class ChatViewModel @Inject constructor(
             try {
                 val dissolveMsg = ChatMessage(
                     t = ProtocolMessageType.DISSOLVE.code,
-                    u = myUuid.take(4),
+                    u = myUuidShort,
                     g = groupId.take(4),
                     ts = System.currentTimeMillis(),
                 )
@@ -525,7 +529,7 @@ class ChatViewModel @Inject constructor(
             }
 
             // 回到首页
-            _uiState.value = ChatUiState(nickname = nickname)
+            _uiState.value = ChatUiState(nickname = nickname, myUuidShort = myUuidShort)
             Log.i(TAG, "群聊已解散")
         }
     }
@@ -561,13 +565,28 @@ class ChatViewModel @Inject constructor(
                     runDb {
                         storagePlugin.getMemberDao().upsert(newMember)
                         lifecyclePlugin?.addMember(msg.u)
+
+                        // 广播全量成员同步：让新加入者和已有成员都能看到完整列表
+                        val allMembers = storagePlugin.getMemberDao().getByGroupId(groupId)
+                        for (m in allMembers) {
+                            val syncMsg = ChatMessage(
+                                t = ProtocolMessageType.MEMBER_SYNC.code,
+                                u = m.memberUuid,
+                                n = m.nickname,
+                                g = groupId.take(4),
+                                ts = System.currentTimeMillis(),
+                                mid = UUID.randomUUID().toString(),
+                            )
+                            blePlugin.broadcastToClients(syncMsg.toJson().toByteArray())
+                        }
+                        Log.i(TAG, "已广播 ${allMembers.size} 条 MEMBER_SYNC")
                     }
 
                     // 回复 join_ack + 广播系统消息（失败不影响主流程）
                     try {
                         val ackMsg = ChatMessage(
                             t = ProtocolMessageType.JOIN_ACK.code,
-                            u = myUuid.take(4),
+                            u = myUuidShort,
                             n = nickname,
                             g = groupId.take(4),
                             ts = System.currentTimeMillis(),
@@ -577,7 +596,7 @@ class ChatViewModel @Inject constructor(
 
                         val sysMsg = ChatMessage(
                             t = ProtocolMessageType.SYS.code,
-                            u = myUuid.take(4),
+                            u = myUuidShort,
                             c = "${msg.n ?: "新成员"} 加入了群聊",
                             g = groupId.take(4),
                             ts = System.currentTimeMillis(),
@@ -699,7 +718,37 @@ class ChatViewModel @Inject constructor(
                         storagePlugin.clearAll()
                         try { blePlugin.disconnectClient() } catch (e: Exception) { Log.e(TAG, "断开连接失败", e) }
                     }
-                    _uiState.value = ChatUiState(nickname = nickname)
+                    _uiState.value = ChatUiState(nickname = nickname, myUuidShort = myUuidShort)
+                }
+
+                ProtocolMessageType.MEMBER_SYNC -> {
+                    // 收到 Hub 广播的成员同步：更新本地成员表
+                    val memberId = msg.u
+                    val memberName = msg.n ?: "未知"
+                    val isMe = memberId == myUuidShort
+                    runDb {
+                        val existing = storagePlugin.getMemberDao().getById(memberId, groupId)
+                        if (existing != null) {
+                            // 已有记录：只更新昵称（保留 isSelf 等字段）
+                            storagePlugin.getMemberDao().upsert(
+                                existing.copy(nickname = memberName, status = MemberStatus.ACTIVE)
+                            )
+                        } else {
+                            // 新成员：插入
+                            storagePlugin.getMemberDao().upsert(
+                                MemberEntity(
+                                    memberUuid = memberId,
+                                    groupId = groupId,
+                                    nickname = memberName,
+                                    isSelf = isMe,
+                                    status = MemberStatus.ACTIVE,
+                                    lastHeartbeat = System.currentTimeMillis(),
+                                    joinedAt = System.currentTimeMillis(),
+                                )
+                            )
+                        }
+                    }
+                    Log.d(TAG, "MEMBER_SYNC: $memberId ($memberName), isMe=$isMe")
                 }
 
                 else -> {
@@ -837,7 +886,7 @@ class ChatViewModel @Inject constructor(
         } catch (e: Exception) {
             Log.e(TAG, "取消创建时清理失败", e)
         }
-        _uiState.value = ChatUiState(nickname = nickname)
+        _uiState.value = ChatUiState(nickname = nickname, myUuidShort = myUuidShort)
         Log.i(TAG, "已取消创建群聊")
     }
 }
