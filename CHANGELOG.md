@@ -13,6 +13,14 @@ AIGC:
 
 本项目所有重要变更记录于此文件。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.3.3] - 2026-09-26
+
+### 修复
+
+- **创建群聊无提示**：不支持 BLE 广播的设备点击"创建群聊"后无反应。首页现已显示错误提示"当前设备不支持发起群聊（BLE 广播不可用），请由对方设备创建群聊后加入"
+- **版本号显示为 0.1**："我的"页面版本号硬编码为 0.1。改为从 BuildConfig.VERSION_NAME 读取，同步 Gradle versionName 为 0.3.2
+- **邀请码输入键盘**：键盘类型从 NumberPassword 改为 Number，确保正确调用数字键盘
+
 ## [0.3.2] - 2026-09-26
 
 ### 修复（5轮全量代码审计）
