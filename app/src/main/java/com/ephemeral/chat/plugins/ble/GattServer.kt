@@ -30,11 +30,11 @@ class GattServer(private val context: Context) {
     /** 已连接设备列表，线程安全 */
     private val connectedDevices = ConcurrentHashMap<String, BluetoothDevice>()
 
-    /** 每个设备的独立分片重组器（避免多设备 msgId 冲突） */
+    /** 每个设备的独立分片重组器（默认 247 字节，兼容大多数设备） */
     private val fragmenters = ConcurrentHashMap<String, MessageFragmenter>()
 
-    /** 广播分片器：每片固定 20 字节，保证低 MTU 设备也能收到完整通知 */
-    private val broadcastFragmenter = MessageFragmenter(20)
+    /** 广播分片器：247 字节/片（Hub 端用保守大值提升吞吐） */
+    private val broadcastFragmenter = MessageFragmenter(247)
 
     /** 消息接收回调 */
     var onMessageReceived: ((ByteArray) -> Unit)? = null
@@ -99,7 +99,7 @@ class GattServer(private val context: Context) {
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
                     connectedDevices[device.address] = device
-                    fragmenters.getOrPut(device.address) { MessageFragmenter(20) }
+                    fragmenters.getOrPut(device.address) { MessageFragmenter(247) }
                     Log.i(TAG, "设备连接: ${device.address}, 当前连接数: ${connectedDevices.size}")
                 }
                 BluetoothProfile.STATE_DISCONNECTED -> {

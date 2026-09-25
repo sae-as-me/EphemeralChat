@@ -35,10 +35,10 @@ class GattClient(private val context: Context) {
     private var notificationReady = false
 
     /**
-     * 分片器：每片固定 20 字节（含 3 字节头），保证在任意 MTU（即使协商失败降为 23）下
-     * 消息都能完整送达 Server。Server 端按 msgId+seq 重组。
+     * 分片器：默认 20 字节（含 3 字节头），MTU 协商成功后会更新为更大值。
+     * 保证在任意 MTU（即使协商失败降为 23）下消息都能完整送达 Server。
      */
-    private val fragmenter = MessageFragmenter(20)
+    private var fragmenter = MessageFragmenter(20)
     private val writeQueue = ArrayDeque<ByteArray>()
     private var busy = false
 
@@ -85,6 +85,11 @@ class GattClient(private val context: Context) {
 
         override fun onMtuChanged(bluetoothGatt: BluetoothGatt, mtu: Int, status: Int) {
             Log.i(TAG, "MTU 协商完成: $mtu, status=$status")
+            // MTU 协商成功：更新分片器为更大的分片，大幅提升传输速度
+            if (status == BluetoothGatt.GATT_SUCCESS && mtu > 23) {
+                fragmenter = MessageFragmenter(mtu)
+                Log.i(TAG, "分片器已更新为 $mtu 字节/片")
+            }
         }
 
         override fun onDescriptorWrite(

@@ -34,4 +34,4 @@ data class MessageEntity(
 /**
  * 消息类型。
  */
-enum class MessageType { TEXT, SYSTEM, IMAGE }
+enum class MessageType { TEXT, SYSTEM, IMAGE, FILE }

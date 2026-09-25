@@ -27,12 +27,14 @@ import com.ephemeral.chat.SharedStateManager
 import com.ephemeral.chat.service.EphemeralForegroundService
 import com.ephemeral.chat.service.NotificationHelper
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Job
+import org.json.JSONObject
 import java.security.PublicKey
 import java.util.UUID
 import javax.crypto.SecretKey
@@ -80,8 +82,14 @@ class ChatViewModel @Inject constructor(
         val isHub: Boolean = false,
         val connectionStatus: ConnectionStatus = ConnectionStatus.Disconnected,
         val errorMessage: String? = null,
-        /** 是否已进入过聊天界面（用于首页区分“创建后等待”与“返回但不退出”） */
+        /** 是否已进入过聊天界面 */
         val chatEntered: Boolean = false,
+        /** 文件传输进度（0~100，-1 表示无传输） */
+        val fileTransferProgress: Int = -1,
+        /** 文件传输状态文本 */
+        val fileTransferStatus: String = "",
+        /** 全屏预览图片的本地路径（非空时显示预览） */
+        val previewImagePath: String? = null,
     )
 
     enum class Screen { Home, Create, Join, Chat, Members }
@@ -425,6 +433,218 @@ class ChatViewModel @Inject constructor(
         }
     }
 
+    // ---- 文件/图片发送 ----
+
+    /**
+     * 发送图片（从文件路径，已压缩或待压缩）。
+     * 流程：压缩 → base64 → 保存本地 → 存消息记录 → BLE 发送
+     */
+    fun sendImage(imagePath: String, originalName: String = "image.jpg") {
+        val blePlugin = registry.getPlugin<BlePlugin>("ble") ?: return
+        val storagePlugin = registry.getPlugin<StoragePlugin>("storage") ?: return
+        val groupId = _uiState.value.groupId
+        val context = EphemeralChatApplication.get()
+        val msgId = UUID.randomUUID().toString()
+        val fileId = UUID.randomUUID().toString().take(8)
+        val timestamp = System.currentTimeMillis()
+
+        _uiState.value = _uiState.value.copy(fileTransferProgress = 0, fileTransferStatus = "正在压缩图片...")
+
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                // 压缩图片
+                val (base64Data, compressedSize) = FileTransferHelper.compressImageFileToBase64(imagePath)
+                    ?: run {
+                        _uiState.value = _uiState.value.copy(fileTransferProgress = -1, errorMessage = "图片压缩失败")
+                        return@launch
+                    }
+
+                // 保存到本地临时目录
+                val localPath = FileTransferHelper.saveBase64ToFile(context, groupId, fileId, base64Data, originalName)
+
+                // 构造元信息 JSON（存入消息 content）
+                val meta = FileTransferHelper.FileMetaData(
+                    fileName = originalName,
+                    mimeType = "image/jpeg",
+                    fileSize = compressedSize.toLong(),
+                    isImage = true,
+                    localPath = localPath,
+                )
+
+                // 存本地消息记录
+                val msgEntity = MessageEntity(
+                    msgId = msgId,
+                    groupId = groupId,
+                    senderUuid = myUuidShort,
+                    senderName = nickname,
+                    content = meta.toJson(),
+                    type = MessageType.IMAGE,
+                    timestamp = timestamp,
+                    isDelivered = false,
+                )
+                storagePlugin.getMessageDao().upsert(msgEntity)
+
+                // 构造 BLE 消息（元信息+base64数据一起发送）
+                val payload = JSONObject().apply {
+                    put("meta", meta.toJson())
+                    put("data", base64Data)
+                }.toString()
+
+                val fileMsg = ChatMessage(
+                    t = ProtocolMessageType.FILE.code,
+                    u = myUuidShort,
+                    n = nickname,
+                    c = payload,
+                    g = groupId.take(4),
+                    ts = timestamp,
+                    mid = msgId,
+                )
+
+                _uiState.value = _uiState.value.copy(fileTransferProgress = 50, fileTransferStatus = "正在发送图片...")
+
+                val data = fileMsg.toJson().toByteArray()
+                if (_uiState.value.isHub) {
+                    blePlugin.broadcastToClients(data)
+                } else {
+                    blePlugin.writeToHub(data)
+                }
+
+                _uiState.value = _uiState.value.copy(fileTransferProgress = -1, fileTransferStatus = "")
+                Log.i(TAG, "图片已发送: $originalName, $compressedSize bytes")
+            } catch (e: Exception) {
+                Log.e(TAG, "发送图片失败", e)
+                _uiState.value = _uiState.value.copy(fileTransferProgress = -1, errorMessage = "发送图片失败: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * 发送文件（非图片）。
+     * 限制：≤ 10MB。
+     */
+    fun sendFile(filePath: String, fileName: String, fileSize: Long, mimeType: String) {
+        if (!FileTransferHelper.isFileSizeValid(fileSize)) {
+            _uiState.value = _uiState.value.copy(errorMessage = "文件超过 10MB 上限")
+            return
+        }
+
+        val blePlugin = registry.getPlugin<BlePlugin>("ble") ?: return
+        val storagePlugin = registry.getPlugin<StoragePlugin>("storage") ?: return
+        val groupId = _uiState.value.groupId
+        val context = EphemeralChatApplication.get()
+        val msgId = UUID.randomUUID().toString()
+        val fileId = UUID.randomUUID().toString().take(8)
+        val timestamp = System.currentTimeMillis()
+
+        _uiState.value = _uiState.value.copy(fileTransferProgress = 0, fileTransferStatus = "正在读取文件...")
+
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val (base64Data, actualSize) = FileTransferHelper.readFileToBase64(filePath)
+                    ?: run {
+                        _uiState.value = _uiState.value.copy(fileTransferProgress = -1, errorMessage = "文件读取失败")
+                        return@launch
+                    }
+
+                val localPath = FileTransferHelper.saveBase64ToFile(context, groupId, fileId, base64Data, fileName)
+
+                val meta = FileTransferHelper.FileMetaData(
+                    fileName = fileName,
+                    mimeType = mimeType,
+                    fileSize = actualSize.toLong(),
+                    isImage = false,
+                    localPath = localPath,
+                )
+
+                val msgEntity = MessageEntity(
+                    msgId = msgId,
+                    groupId = groupId,
+                    senderUuid = myUuidShort,
+                    senderName = nickname,
+                    content = meta.toJson(),
+                    type = MessageType.FILE,
+                    timestamp = timestamp,
+                    isDelivered = false,
+                )
+                storagePlugin.getMessageDao().upsert(msgEntity)
+
+                val payload = JSONObject().apply {
+                    put("meta", meta.toJson())
+                    put("data", base64Data)
+                }.toString()
+
+                val fileMsg = ChatMessage(
+                    t = ProtocolMessageType.FILE.code,
+                    u = myUuidShort,
+                    n = nickname,
+                    c = payload,
+                    g = groupId.take(4),
+                    ts = timestamp,
+                    mid = msgId,
+                )
+
+                _uiState.value = _uiState.value.copy(fileTransferProgress = 50, fileTransferStatus = "正在发送文件...")
+
+                val data = fileMsg.toJson().toByteArray()
+                if (_uiState.value.isHub) {
+                    blePlugin.broadcastToClients(data)
+                } else {
+                    blePlugin.writeToHub(data)
+                }
+
+                _uiState.value = _uiState.value.copy(fileTransferProgress = -1, fileTransferStatus = "")
+                Log.i(TAG, "文件已发送: $fileName, $actualSize bytes")
+            } catch (e: Exception) {
+                Log.e(TAG, "发送文件失败", e)
+                _uiState.value = _uiState.value.copy(fileTransferProgress = -1, errorMessage = "发送文件失败: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * 另存图片到系统相册。
+     */
+    fun saveImageToGallery(localPath: String, fileName: String) {
+        val context = EphemeralChatApplication.get()
+        viewModelScope.launch(Dispatchers.IO) {
+            val uri = FileTransferHelper.saveImageToGallery(context, localPath, fileName)
+            if (uri != null) {
+                _uiState.value = _uiState.value.copy(errorMessage = "已保存到相册")
+            } else {
+                _uiState.value = _uiState.value.copy(errorMessage = "保存失败")
+            }
+        }
+    }
+
+    /**
+     * 另存文件到下载目录。
+     */
+    fun saveFileToDownloads(localPath: String, fileName: String, mimeType: String) {
+        val context = EphemeralChatApplication.get()
+        viewModelScope.launch(Dispatchers.IO) {
+            val uri = FileTransferHelper.saveFileToDownloads(context, localPath, fileName, mimeType)
+            if (uri != null) {
+                _uiState.value = _uiState.value.copy(errorMessage = "已保存到下载目录")
+            } else {
+                _uiState.value = _uiState.value.copy(errorMessage = "保存失败")
+            }
+        }
+    }
+
+    /**
+     * 打开图片全屏预览。
+     */
+    fun openImagePreview(localPath: String) {
+        _uiState.value = _uiState.value.copy(previewImagePath = localPath)
+    }
+
+    /**
+     * 关闭图片预览。
+     */
+    fun closeImagePreview() {
+        _uiState.value = _uiState.value.copy(previewImagePath = null)
+    }
+
     // ---- 修改用户名 ----
 
     /**
@@ -526,6 +746,7 @@ class ChatViewModel @Inject constructor(
             // 回到首页
             _uiState.value = ChatUiState(nickname = nickname, myUuidShort = myUuidShort)
             stopForegroundService()
+            FileTransferHelper.clearAllFiles(EphemeralChatApplication.get())
             Log.i(TAG, "已退出群聊")
         }
     }
@@ -576,6 +797,7 @@ class ChatViewModel @Inject constructor(
             // 回到首页
             _uiState.value = ChatUiState(nickname = nickname, myUuidShort = myUuidShort)
             stopForegroundService()
+            FileTransferHelper.clearAllFiles(EphemeralChatApplication.get())
             Log.i(TAG, "群聊已解散")
         }
     }
@@ -826,6 +1048,59 @@ class ChatViewModel @Inject constructor(
                     Log.d(TAG, "MEMBER_SYNC: $memberId ($memberName), isMe=$isMe")
                 }
 
+                ProtocolMessageType.FILE -> {
+                    // 收到文件/图片消息：解析元信息+base64数据，保存到本地
+                    try {
+                        val payload = JSONObject(msg.c ?: "")
+                        val metaJson = payload.optString("meta", "")
+                        val base64Data = payload.optString("data", "")
+
+                        if (metaJson.isBlank() || base64Data.isBlank()) {
+                            Log.w(TAG, "FILE 消息缺少 meta 或 data")
+                        } else {
+
+                        val meta = FileTransferHelper.FileMetaData.fromJson(metaJson)
+                        val context = EphemeralChatApplication.get()
+                        val fileId = msg.mid ?: UUID.randomUUID().toString().take(8)
+
+                        _uiState.value = _uiState.value.copy(fileTransferProgress = 50, fileTransferStatus = "正在接收${if (meta.isImage) "图片" else "文件"}...")
+
+                        // 保存到本地
+                        val localPath = FileTransferHelper.saveBase64ToFile(
+                            context, groupId, fileId, base64Data, meta.fileName
+                        )
+
+                        val updatedMeta = meta.copy(localPath = localPath)
+
+                        runDb {
+                            val msgEntity = MessageEntity(
+                                msgId = msg.mid ?: UUID.randomUUID().toString(),
+                                groupId = groupId,
+                                senderUuid = msg.u,
+                                senderName = msg.n ?: "未知",
+                                content = updatedMeta.toJson(),
+                                type = if (meta.isImage) MessageType.IMAGE else MessageType.FILE,
+                                timestamp = msg.ts,
+                                isDelivered = true,
+                            )
+                            storagePlugin.getMessageDao().upsert(msgEntity)
+                        }
+
+                        _uiState.value = _uiState.value.copy(fileTransferProgress = -1, fileTransferStatus = "")
+                        Log.i(TAG, "收到${if (meta.isImage) "图片" else "文件"}: ${meta.fileName}, ${meta.fileSize} bytes")
+
+                        // 后台通知
+                        if (msg.u != myUuidShort) {
+                            val title = if (meta.isImage) "${msg.n ?: "好友"} 发送了图片" else "${msg.n ?: "好友"} 发送了文件"
+                            maybeNotifyBackgroundNotification(title, meta.fileName)
+                        }
+                        } // end else
+                    } catch (e: Exception) {
+                        Log.e(TAG, "接收文件失败", e)
+                        _uiState.value = _uiState.value.copy(fileTransferProgress = -1, errorMessage = "接收文件失败")
+                    }
+                }
+
                 else -> {
                     Log.d(TAG, "未处理的消息类型: ${msg.t}")
                 }
@@ -1028,6 +1303,7 @@ class ChatViewModel @Inject constructor(
         }
         _uiState.value = ChatUiState(nickname = nickname, myUuidShort = myUuidShort)
         stopForegroundService()
+        FileTransferHelper.clearAllFiles(EphemeralChatApplication.get())
         Log.i(TAG, "已取消创建群聊")
     }
 }
