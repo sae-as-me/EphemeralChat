@@ -145,6 +145,13 @@ class BlePlugin : IPlugin {
 
     /**
      * 设备是否支持 BLE 广播（创建群聊前预检）。
+     * 注意：蓝牙未开启时 isMultipleAdvertisementSupported 返回值不确定，
+     * 部分设备会返回 false 导致误判。因此蓝牙未开启时跳过预检返回 true，
+     * 让后续广播启动流程自然处理（启动失败时会报具体错误）。
      */
-    fun canAdvertise(): Boolean = adapter?.isMultipleAdvertisementSupported == true
+    fun canAdvertise(): Boolean {
+        val adapter = this.adapter ?: return true // adapter 为 null 时不阻断，让后续流程报错
+        if (!adapter.isEnabled) return true // 蓝牙未开启时不预检，避免误判
+        return adapter.isMultipleAdvertisementSupported
+    }
 }
