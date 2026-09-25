@@ -98,10 +98,17 @@ class GattClient(private val context: Context) {
             status: Int,
         ) {
             Log.d(TAG, "描述符写入完成: status=$status")
-            // 通知订阅已启用——此时才能真正可靠收到 Server 广播，作为“连接就绪”信号
-            if (status == BluetoothGatt.GATT_SUCCESS && descriptor.uuid == UUID.fromString(BleConstants.CLIENT_CONFIG_UUID)) {
-                notificationReady = true
-                onConnected?.invoke()
+            if (descriptor.uuid == UUID.fromString(BleConstants.CLIENT_CONFIG_UUID)) {
+                if (status == BluetoothGatt.GATT_SUCCESS) {
+                    // 通知订阅成功——作为"连接就绪"信号
+                    notificationReady = true
+                    onConnected?.invoke()
+                } else {
+                    // 描述符写入失败：回退——直接标记就绪，至少能写不能收
+                    Log.w(TAG, "描述符写入失败 status=$status，回退为只写模式")
+                    notificationReady = true
+                    onConnected?.invoke()
+                }
             }
         }
 

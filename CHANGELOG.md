@@ -13,6 +13,18 @@ AIGC:
 
 本项目所有重要变更记录于此文件。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.3.1] - 2026-09-26
+
+### 修复（源码审计）
+
+- **GattServer 广播分片丢失**：多设备广播时 `notifChar.value` 在设备间被覆盖，后一台设备只收到最后一个分片。改为每次 `notifyCharacteristicChanged` 前重新设值
+- **GattClient 描述符写入失败无回退**：`onDescriptorWrite` 返回非 GATT_SUCCESS 时 `notificationReady` 永不为 true → `onConnected` 不回调 → 卡死。改为失败时也标记就绪（回退为只写模式）
+- **MessageFragmenter 分片数溢出**：seq 字段仅 7 bit（最大 127），超过 128 片时回绕导致重组错位。增加上限校验，超出抛出明确异常
+- **大文件发送 OOM**：10MB 文件 base64 编码后约 13MB，加上 JSON 包装峰值约 15MB，低端设备堆不足。增加可用内存检查，不足时提前拒绝并提示
+- **临时缓存文件泄漏**：图片/文件选择器复制到 cacheDir 的临时文件用完未删除。在回调中增加 `tempFile.delete()`
+- **另存为提示被覆盖**：保存成功/失败的 `errorMessage` 在文件传输完成时被 `copy(fileTransferStatus = "")` 覆盖。合并为单次 copy
+- **图片预览加载失败无提示**：`ImagePreviewScreen` 中 bitmap 为 null 时空白，增加"图片加载失败"文本提示
+
 ## [0.3.0] - 2026-09-26
 
 ### 新增

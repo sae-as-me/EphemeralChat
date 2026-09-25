@@ -150,7 +150,9 @@ class GattServer(private val context: Context) {
 
     /**
      * 向所有已连接 Client 发送通知。
-     * 数据经 MessageFragmenter 分片（每片 ≤ 20 字节），保证低 MTU 设备也能收到完整消息。
+     * 数据经 MessageFragmenter 分片，每个分片独立设置 value 后再逐设备发送。
+     * 修复：原实现先设 notifChar.value 再遍历设备，多设备场景下
+     * 后一台设备的通知可能拿到被覆盖的 value（分片丢失）。
      *
      * @param data 要广播的数据
      */
@@ -158,11 +160,12 @@ class GattServer(private val context: Context) {
         val notifChar = notificationCharacteristic ?: return
 
         for (fragment in broadcastFragmenter.fragment(data)) {
-            notifChar.value = fragment
+            // 先设置 value，再逐设备发通知（修复：每次发送前重新设值，避免被覆盖）
             for ((_, device) in connectedDevices) {
+                notifChar.value = fragment
                 server?.notifyCharacteristicChanged(device, notifChar, false)
             }
-            Log.d(TAG, "广播通知分片 ${fragment.size} 字节")
+            Log.d(TAG, "广播通知分片 ${fragment.size} 字节 → ${connectedDevices.size} 台设备")
         }
     }
 

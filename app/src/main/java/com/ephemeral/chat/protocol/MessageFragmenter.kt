@@ -27,11 +27,19 @@ class MessageFragmenter(private val mtu: Int = 247) {
 
     /**
      * 将数据分片。
+     * 分片头 3 bytes: msg_id(2) + seq_flag(1) [1 bit is_last | 7 bits seq 0-127]
+     * 限制：单条消息最大 128 * (mtu-3) 字节。超过此限制将抛出异常。
      *
      * @param data 原始数据
      * @return 分片列表，每片包含 3 字节头
+     * @throws IllegalArgumentException 数据过大超过 128 片上限
      */
     fun fragment(data: ByteArray): List<ByteArray> {
+        val maxMsgSize = 128 * maxPayload
+        if (data.size > maxMsgSize) {
+            throw IllegalArgumentException("数据 ${data.size} 字节超过分片协议上限 ${maxMsgSize} 字节（128 片 × ${maxPayload}）")
+        }
+
         if (data.size <= maxPayload) {
             // 无需分片，单片发送
             val msgId = nextMsgId

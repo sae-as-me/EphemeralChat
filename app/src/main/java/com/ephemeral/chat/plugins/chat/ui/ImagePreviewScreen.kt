@@ -41,7 +41,7 @@ fun ImagePreviewScreen(viewModel: ChatViewModel, imagePath: String) {
             .background(Color.Black),
     ) {
         val bitmap = remember(imagePath) {
-            BitmapFactory.decodeFile(imagePath)
+            runCatching { BitmapFactory.decodeFile(imagePath) }.getOrNull()
         }
 
         if (bitmap != null) {
@@ -64,6 +64,13 @@ fun ImagePreviewScreen(viewModel: ChatViewModel, imagePath: String) {
                         translationY = offsetY,
                     ),
                 contentScale = ContentScale.Fit,
+            )
+        } else {
+            // 图片加载失败：显示提示文本
+            Text(
+                text = "图片加载失败",
+                color = Color.White,
+                modifier = Modifier.align(Alignment.Center),
             )
         }
 

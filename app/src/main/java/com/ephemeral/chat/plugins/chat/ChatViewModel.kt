@@ -528,6 +528,17 @@ class ChatViewModel @Inject constructor(
             return
         }
 
+        // 内存安全检查：base64 编码后体积膨胀约 33%，10MB 文件需约 13MB 堆内存
+        // 加上分片 JSON 包装，峰值约 15MB。低端设备可用堆可能不足。
+        val runtime = Runtime.getRuntime()
+        val freeMem = runtime.maxMemory() - (runtime.totalMemory() - runtime.freeMemory())
+        val estimatedBase64Size = (fileSize * 1.34).toLong()
+        if (estimatedBase64Size > freeMem / 3) {
+            _uiState.value = _uiState.value.copy(errorMessage = "文件过大，设备内存不足，请尝试发送更小的文件")
+            Log.w(TAG, "内存不足: free=$freeMem, base64Est=$estimatedBase64Size")
+            return
+        }
+
         val blePlugin = registry.getPlugin<BlePlugin>("ble") ?: return
         val storagePlugin = registry.getPlugin<StoragePlugin>("storage") ?: return
         val groupId = _uiState.value.groupId
@@ -608,11 +619,9 @@ class ChatViewModel @Inject constructor(
         val context = EphemeralChatApplication.get()
         viewModelScope.launch(Dispatchers.IO) {
             val uri = FileTransferHelper.saveImageToGallery(context, localPath, fileName)
-            if (uri != null) {
-                _uiState.value = _uiState.value.copy(errorMessage = "已保存到相册")
-            } else {
-                _uiState.value = _uiState.value.copy(errorMessage = "保存失败")
-            }
+            _uiState.value = _uiState.value.copy(
+                errorMessage = if (uri != null) "已保存到相册" else "保存失败",
+            )
         }
     }
 
@@ -623,11 +632,9 @@ class ChatViewModel @Inject constructor(
         val context = EphemeralChatApplication.get()
         viewModelScope.launch(Dispatchers.IO) {
             val uri = FileTransferHelper.saveFileToDownloads(context, localPath, fileName, mimeType)
-            if (uri != null) {
-                _uiState.value = _uiState.value.copy(errorMessage = "已保存到下载目录")
-            } else {
-                _uiState.value = _uiState.value.copy(errorMessage = "保存失败")
-            }
+            _uiState.value = _uiState.value.copy(
+                errorMessage = if (uri != null) "已保存到下载目录" else "保存失败",
+            )
         }
     }
 

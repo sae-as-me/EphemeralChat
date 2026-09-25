@@ -106,6 +106,8 @@ fun ChatScreen(viewModel: ChatViewModel) {
                     java.io.FileOutputStream(tempFile).use { output -> input.copyTo(output) }
                 }
                 viewModel.sendImage(tempFile.absolutePath, fileName)
+                // 压缩完成后清理临时文件
+                tempFile.delete()
             }
         }
     }
@@ -120,6 +122,7 @@ fun ChatScreen(viewModel: ChatViewModel) {
                 bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, out)
             }
             viewModel.sendImage(tempFile.absolutePath, "camera.jpg")
+            tempFile.delete()
         }
     }
 
@@ -141,6 +144,7 @@ fun ChatScreen(viewModel: ChatViewModel) {
                     java.io.FileOutputStream(tempFile).use { output -> input.copyTo(output) }
                 }
                 viewModel.sendFile(tempFile.absolutePath, fileName, fileSize, mimeType)
+                tempFile.delete()
             }
         }
     }
