@@ -19,6 +19,7 @@ class ProfileViewModel @Inject constructor() : ViewModel() {
     data class ProfileUiState(
         val currentNickname: String = "",
         val isDarkTheme: Boolean = true,
+        val showNotifications: Boolean = false,
         val appVersion: String = "0.1",
     )
 
@@ -26,6 +27,7 @@ class ProfileViewModel @Inject constructor() : ViewModel() {
         ProfileUiState(
             currentNickname = SharedStateManager.nickname.value,
             isDarkTheme = SharedStateManager.isDarkTheme.value,
+            showNotifications = SharedStateManager.showNotifications.value,
         )
     )
     val uiState: StateFlow<ProfileUiState> = _uiState.asStateFlow()
@@ -38,6 +40,7 @@ class ProfileViewModel @Inject constructor() : ViewModel() {
         _uiState.value = _uiState.value.copy(
             currentNickname = SharedStateManager.nickname.value,
             isDarkTheme = SharedStateManager.isDarkTheme.value,
+            showNotifications = SharedStateManager.showNotifications.value,
         )
     }
 
@@ -58,5 +61,13 @@ class ProfileViewModel @Inject constructor() : ViewModel() {
         if (nickname.isBlank()) return
         SharedStateManager.setNickname(nickname)
         _uiState.value = _uiState.value.copy(currentNickname = nickname)
+    }
+
+    /**
+     * 切换后台新消息弹窗开关。
+     */
+    fun toggleShowNotifications(enabled: Boolean) {
+        SharedStateManager.setShowNotifications(enabled)
+        _uiState.value = _uiState.value.copy(showNotifications = enabled)
     }
 }

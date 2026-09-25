@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ExitToApp
@@ -34,6 +35,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -60,6 +62,14 @@ fun ChatScreen(viewModel: ChatViewModel) {
     val state by viewModel.uiState.collectAsStateLifecycle()
     var menuExpanded by remember { mutableStateOf(false) }
     var showExitDialog by remember { mutableStateOf(false) }
+
+    // 消息列表状态：新消息到达时自动滚动到底部
+    val listState = rememberLazyListState()
+    LaunchedEffect(state.messages.size) {
+        if (state.messages.isNotEmpty()) {
+            listState.scrollToItem(state.messages.size - 1)
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -152,6 +162,7 @@ fun ChatScreen(viewModel: ChatViewModel) {
 
             // 消息列表
             LazyColumn(
+                state = listState,
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()

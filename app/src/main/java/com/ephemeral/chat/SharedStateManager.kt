@@ -28,6 +28,7 @@ object SharedStateManager {
     /** DataStore key 定义 */
     private val KEY_DARK_THEME = booleanPreferencesKey("dark_theme")
     private val KEY_NICKNAME = stringPreferencesKey("nickname")
+    private val KEY_SHOW_NOTIFICATIONS = booleanPreferencesKey("show_notifications")
 
     private lateinit var appContext: Context
     private val scope = CoroutineScope(Dispatchers.IO)
@@ -39,6 +40,10 @@ object SharedStateManager {
     /** 当前用户昵称，空字符串表示尚未设置 */
     private val _nickname = MutableStateFlow("")
     val nickname: StateFlow<String> = _nickname.asStateFlow()
+
+    /** 后台新消息弹窗开关，默认关闭（由用户在“我的”页面控制） */
+    private val _showNotifications = MutableStateFlow(false)
+    val showNotifications: StateFlow<Boolean> = _showNotifications.asStateFlow()
 
     /** 是否已初始化 */
     private var initialized = false
@@ -58,8 +63,9 @@ object SharedStateManager {
                 appContext.dataStore.data.first().let { prefs ->
                     _isDarkTheme.value = prefs[KEY_DARK_THEME] ?: true
                     _nickname.value = prefs[KEY_NICKNAME] ?: ""
+                    _showNotifications.value = prefs[KEY_SHOW_NOTIFICATIONS] ?: false
                 }
-                android.util.Log.i(TAG, "初始化完成: darkTheme=${_isDarkTheme.value}, nickname=${_nickname.value}")
+                android.util.Log.i(TAG, "初始化完成: darkTheme=${_isDarkTheme.value}, nickname=${_nickname.value}, notifications=${_showNotifications.value}")
             } catch (e: Exception) {
                 android.util.Log.e(TAG, "初始化失败（使用默认值）", e)
             }
@@ -91,6 +97,16 @@ object SharedStateManager {
         _nickname.value = name
         scope.launch {
             appContext.dataStore.edit { it[KEY_NICKNAME] = name }
+        }
+    }
+
+    /**
+     * 设置后台新消息弹窗开关并持久化。
+     */
+    fun setShowNotifications(enabled: Boolean) {
+        _showNotifications.value = enabled
+        scope.launch {
+            appContext.dataStore.edit { it[KEY_SHOW_NOTIFICATIONS] = enabled }
         }
     }
 }

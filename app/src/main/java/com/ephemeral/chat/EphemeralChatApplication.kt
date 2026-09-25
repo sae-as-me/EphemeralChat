@@ -1,6 +1,8 @@
 package com.ephemeral.chat
 
+import android.app.Activity
 import android.app.Application
+import android.os.Bundle
 import com.ephemeral.chat.core.eventbus.EventBus
 import com.ephemeral.chat.core.registry.PluginRegistry
 import com.ephemeral.chat.plugins.ble.BlePlugin
@@ -32,8 +34,24 @@ class EphemeralChatApplication : Application() {
     lateinit var pluginRegistry: PluginRegistry
         private set
 
+    companion object {
+        private lateinit var instance: EphemeralChatApplication
+
+        /** 全局 Application 实例（用于启动前台服务、发通知等） */
+        fun get(): EphemeralChatApplication = instance
+
+        /** 前台 Activity 计数：>0 表示应用在前台 */
+        @Volatile
+        private var foregroundActivities = 0
+
+        /** 应用是否在前台（后台时用于决定是否弹窗通知） */
+        fun isAppInForeground(): Boolean = foregroundActivities > 0
+    }
+
     override fun onCreate() {
         super.onCreate()
+        instance = this
+        registerActivityForegroundTracker()
         // 设置全局未捕获异常处理（防止个别设备兼容性问题导致闪退无反馈）
         installCrashGuard()
 
@@ -80,5 +98,27 @@ class EphemeralChatApplication : Application() {
             // 交给系统默认处理器结束进程
             defaultHandler?.uncaughtException(thread, throwable)
         }
+    }
+
+    /**
+     * 注册 Activity 生命周期监听，用于判断应用是否在前台。
+     * 用于：后台收到群聊消息时决定是否弹窗通知。
+     */
+    private fun registerActivityForegroundTracker() {
+        registerActivityLifecycleCallbacks(object : ActivityLifecycleCallbacks {
+            override fun onActivityStarted(activity: android.app.Activity) {
+                foregroundActivities++
+            }
+
+            override fun onActivityStopped(activity: android.app.Activity) {
+                foregroundActivities--
+            }
+
+            override fun onActivityCreated(activity: android.app.Activity, savedInstanceState: Bundle?) {}
+            override fun onActivityResumed(activity: android.app.Activity) {}
+            override fun onActivityPaused(activity: android.app.Activity) {}
+            override fun onActivitySaveInstanceState(activity: android.app.Activity, outState: Bundle) {}
+            override fun onActivityDestroyed(activity: android.app.Activity) {}
+        })
     }
 }

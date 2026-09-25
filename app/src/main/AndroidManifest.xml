@@ -18,6 +18,9 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
 
+    <!-- 通知（Android 13+ 运行时权限，用于后台新消息弹窗） -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <!-- 蓝牙硬件声明 -->
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
 

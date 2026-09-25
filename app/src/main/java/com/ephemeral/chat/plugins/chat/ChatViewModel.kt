@@ -1,8 +1,11 @@
 package com.ephemeral.chat.plugins.chat
 
+import android.content.Intent
 import android.util.Log
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.ephemeral.chat.EphemeralChatApplication
 import com.ephemeral.chat.core.eventbus.AppEvent
 import com.ephemeral.chat.core.eventbus.EventBus
 import com.ephemeral.chat.core.registry.PluginRegistry
@@ -21,6 +24,8 @@ import com.ephemeral.chat.plugins.storage.entity.MessageType
 import com.ephemeral.chat.protocol.ChatMessage
 import com.ephemeral.chat.protocol.MessageType as ProtocolMessageType
 import com.ephemeral.chat.SharedStateManager
+import com.ephemeral.chat.service.EphemeralForegroundService
+import com.ephemeral.chat.service.NotificationHelper
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -212,6 +217,7 @@ class ChatViewModel @Inject constructor(
                     chatEntered = true,
                 )
                 loadGroupData(groupId)
+                startForegroundService()
                 Log.i(TAG, "群聊创建成功, code=$code, groupId=$groupId")
             }
         }
@@ -519,6 +525,7 @@ class ChatViewModel @Inject constructor(
 
             // 回到首页
             _uiState.value = ChatUiState(nickname = nickname, myUuidShort = myUuidShort)
+            stopForegroundService()
             Log.i(TAG, "已退出群聊")
         }
     }
@@ -568,6 +575,7 @@ class ChatViewModel @Inject constructor(
 
             // 回到首页
             _uiState.value = ChatUiState(nickname = nickname, myUuidShort = myUuidShort)
+            stopForegroundService()
             Log.i(TAG, "群聊已解散")
         }
     }
@@ -655,6 +663,7 @@ class ChatViewModel @Inject constructor(
                         chatEntered = true,
                     )
                     loadGroupData(_uiState.value.groupId)
+                    startForegroundService()
 
                     // 本地插入“已加入群聊”欢迎消息
                     runDb {
@@ -700,6 +709,11 @@ class ChatViewModel @Inject constructor(
                         )
                         storagePlugin.getMessageDao().upsert(msgEntity)
                     }
+
+                    // 后台弹窗通知
+                    if (msg.u != myUuidShort) {
+                        maybeNotifyBackgroundNotification(msg.n ?: "新消息", content)
+                    }
                 }
 
                 ProtocolMessageType.SYS -> {
@@ -715,6 +729,11 @@ class ChatViewModel @Inject constructor(
                             isDelivered = true,
                         )
                         storagePlugin.getMessageDao().upsert(msgEntity)
+                    }
+
+                    // 后台弹窗提醒（系统消息如成员加入/离开）
+                    if (msg.u != myUuidShort) {
+                        maybeNotifyBackgroundNotification("系统消息", msg.c ?: "")
                     }
                 }
 
@@ -774,6 +793,7 @@ class ChatViewModel @Inject constructor(
                         try { blePlugin.disconnectClient() } catch (e: Exception) { Log.e(TAG, "断开连接失败", e) }
                     }
                     _uiState.value = ChatUiState(nickname = nickname, myUuidShort = myUuidShort)
+                    stopForegroundService()
                 }
 
                 ProtocolMessageType.MEMBER_SYNC -> {
@@ -928,7 +948,7 @@ class ChatViewModel @Inject constructor(
         }
     }
 
-    /**
+/**
      * 等待 JOIN_ACK 的超时保护：25 秒未收到则提示，避免无限卡在"正在连接"。
      */
     private fun startJoinAckTimeout() {
@@ -945,8 +965,55 @@ class ChatViewModel @Inject constructor(
         }
     }
 
+    // ---- 后台运行与消息通知 ----
+
     /**
-     * 取消创建：停止 BLE 活动并回到干净的首页（用于创建等待页的“取消”）。
+     * 启动前台服务：保证切到其他应用后 BLE 继续运行、群聊消息持续接收。
+     */
+    private fun startForegroundService() {
+        try {
+            val context = EphemeralChatApplication.get()
+            ContextCompat.startForegroundService(
+                context,
+                Intent(context, EphemeralForegroundService::class.java),
+            )
+            Log.i(TAG, "前台服务已启动")
+        } catch (e: Exception) {
+            Log.e(TAG, "启动前台服务失败", e)
+        }
+    }
+
+    /**
+     * 停止前台服务（退出/解散群聊时调用）。
+     */
+    private fun stopForegroundService() {
+        try {
+            val context = EphemeralChatApplication.get()
+            context.stopService(Intent(context, EphemeralForegroundService::class.java))
+            Log.i(TAG, "前台服务已停止")
+        } catch (e: Exception) {
+            Log.e(TAG, "停止前台服务失败", e)
+        }
+    }
+
+    /**
+     * 后台收到新消息时按开关弹窗通知（仅在开关开启、应用在后台、有通知权限时生效）。
+     */
+    private fun maybeNotifyBackgroundNotification(title: String, content: String) {
+        try {
+            if (!SharedStateManager.showNotifications.value) return
+            if (EphemeralChatApplication.isAppInForeground()) return
+            val context = EphemeralChatApplication.get()
+            if (NotificationHelper.hasPermission(context)) {
+                NotificationHelper.showMessageNotification(context, title, content)
+            }
+} catch (e: Exception) {
+            Log.e(TAG, "后台通知发送失败", e)
+        }
+    }
+
+    /**
+     * 取消创建：停止 BLE 活动并回到干净的首页（用于创建等待页的"取消"）。
      */
     fun cancelGroupCreation() {
         joinAckTimeoutJob?.cancel()
@@ -960,6 +1027,7 @@ class ChatViewModel @Inject constructor(
             Log.e(TAG, "取消创建时清理失败", e)
         }
         _uiState.value = ChatUiState(nickname = nickname, myUuidShort = myUuidShort)
+        stopForegroundService()
         Log.i(TAG, "已取消创建群聊")
     }
 }

@@ -22,7 +22,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import android.Manifest
+import android.os.Build
+import androidx.core.content.ContextCompat
+import android.content.pm.PackageManager
 import com.ephemeral.chat.core.ui.adaptive.adaptiveDp
 import com.ephemeral.chat.core.ui.adaptive.adaptiveSp
 import com.ephemeral.chat.plugins.chat.ui.collectAsStateLifecycle
@@ -36,9 +43,32 @@ import com.ephemeral.chat.plugins.profile.ProfileViewModel
 fun ProfileScreen() {
     val viewModel: ProfileViewModel = hiltViewModel()
     val state by viewModel.uiState.collectAsStateLifecycle()
+    val context = LocalContext.current
 
     // 进入页面时刷新状态
     LaunchedEffect(Unit) { viewModel.refresh() }
+
+    // 通知权限请求（Android 13+ 开启弹窗开关时才需要）
+    val notifPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (!granted) {
+            // 用户拒绝了通知权限：回退开关为关闭状态
+            viewModel.toggleShowNotifications(false)
+        }
+    }
+
+    fun requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val granted = ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.POST_NOTIFICATIONS,
+            ) == PackageManager.PERMISSION_GRANTED
+            if (!granted) {
+                notifPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
+    }
 
     Column(
         modifier = Modifier.fillMaxSize().padding(adaptiveDp(24f)),
@@ -100,6 +130,36 @@ fun ProfileScreen() {
             Switch(
                 checked = state.isDarkTheme,
                 onCheckedChange = { viewModel.toggleTheme() },
+            )
+        }
+
+        Spacer(modifier = Modifier.height(adaptiveDp(16f)))
+        HorizontalDivider()
+        Spacer(modifier = Modifier.height(adaptiveDp(16f)))
+
+        // ---- 后台新消息弹窗开关 ----
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(adaptiveDp(8f)),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column {
+                Text("弹窗通知", fontSize = adaptiveSp(14f))
+                Text(
+                    "后台收到新消息时弹窗提醒",
+                    fontSize = adaptiveSp(11f),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(
+                checked = state.showNotifications,
+                onCheckedChange = { enabled ->
+                    if (enabled) {
+                        // 先请求权限再开启（Android 13+ 需要）
+                        requestNotificationPermissionIfNeeded()
+                    }
+                    viewModel.toggleShowNotifications(enabled)
+                },
             )
         }
 
