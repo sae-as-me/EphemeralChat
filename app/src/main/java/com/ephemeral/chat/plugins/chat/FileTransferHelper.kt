@@ -138,6 +138,7 @@ object FileTransferHelper {
     private fun compressBitmapToBase64(bitmap: Bitmap): Pair<String, Int> {
         // 缩放长边到 MAX_IMAGE_DIM
         val scaledBitmap = scaleBitmap(bitmap, MAX_IMAGE_DIM)
+        val isDifferentBitmap = scaledBitmap !== bitmap
 
         var quality = JPEG_QUALITY
         var bytes: ByteArray
@@ -148,6 +149,11 @@ object FileTransferHelper {
             bytes = baos.toByteArray()
             quality -= 10
         } while (bytes.size > MAX_IMAGE_BYTES && quality > 20)
+
+        // 修复：回收缩放后产生的新 Bitmap，防止内存泄漏
+        if (isDifferentBitmap) {
+            scaledBitmap.recycle()
+        }
 
         val base64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
         Log.d(TAG, "图片压缩完成: ${bytes.size} bytes, quality=$quality")
@@ -192,7 +198,12 @@ object FileTransferHelper {
         return try {
             val bytes = Base64.decode(base64Data, Base64.DEFAULT)
             val dir = getGroupFileDir(context, groupId)
-            val ext = fileName.substringAfterLast(".", "bin")
+            // 修复：正确提取扩展名，处理无扩展名和空扩展名的边界情况
+            val ext = if (fileName.contains(".") && !fileName.endsWith(".")) {
+                fileName.substringAfterLast(".")
+            } else {
+                "bin"
+            }
             val file = File(dir, "$fileId.$ext")
             FileOutputStream(file).use { it.write(bytes) }
             Log.d(TAG, "文件已保存: ${file.absolutePath}, ${bytes.size} bytes")

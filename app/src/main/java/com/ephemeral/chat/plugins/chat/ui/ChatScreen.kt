@@ -106,8 +106,7 @@ fun ChatScreen(viewModel: ChatViewModel) {
                     java.io.FileOutputStream(tempFile).use { output -> input.copyTo(output) }
                 }
                 viewModel.sendImage(tempFile.absolutePath, fileName)
-                // 压缩完成后清理临时文件
-                tempFile.delete()
+                // 修复：tempFile 由 sendImage 在 IO 线程读完后再删除，不能在主线程立即删
             }
         }
     }
@@ -122,7 +121,7 @@ fun ChatScreen(viewModel: ChatViewModel) {
                 bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, out)
             }
             viewModel.sendImage(tempFile.absolutePath, "camera.jpg")
-            tempFile.delete()
+            // tempFile 由 sendImage 在 IO 线程读完后再删除
         }
     }
 
@@ -144,7 +143,7 @@ fun ChatScreen(viewModel: ChatViewModel) {
                     java.io.FileOutputStream(tempFile).use { output -> input.copyTo(output) }
                 }
                 viewModel.sendFile(tempFile.absolutePath, fileName, fileSize, mimeType)
-                tempFile.delete()
+                // tempFile 由 sendFile 在 IO 线程读完后再删除
             }
         }
     }
@@ -424,8 +423,16 @@ fun MessageBubble(message: MessageEntity, isMine: Boolean, viewModel: ChatViewMo
             val meta = remember(message.content) {
                 runCatching { FileTransferHelper.FileMetaData.fromJson(message.content) }.getOrNull()
             }
-            val bitmap = remember(meta?.localPath) {
-                meta?.localPath?.let { BitmapFactory.decodeFile(it) }
+            // 修复：异步解码图片，避免在主线程做 BitmapFactory.decodeFile 导致 ANR
+            var bitmap by remember(meta?.localPath) {
+                mutableStateOf<android.graphics.Bitmap?>(null)
+            }
+            LaunchedEffect(meta?.localPath) {
+                meta?.localPath?.let { path ->
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        runCatching { BitmapFactory.decodeFile(path) }.getOrNull()
+                    }?.let { bitmap = it }
+                }
             }
             if (meta == null) {
                 Text("图片解析失败", fontSize = adaptiveSp(12f), color = MaterialTheme.colorScheme.error)
@@ -440,8 +447,9 @@ fun MessageBubble(message: MessageEntity, isMine: Boolean, viewModel: ChatViewMo
                             .width(adaptiveDp(200f)),
                     ) {
                         if (bitmap != null) {
+                            val bmp = bitmap!!
                             Image(
-                                bitmap = bitmap.asImageBitmap(),
+                                bitmap = bmp.asImageBitmap(),
                                 contentDescription = "图片",
                                 modifier = Modifier
                                     .fillMaxWidth()

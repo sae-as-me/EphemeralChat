@@ -111,7 +111,8 @@ class EphemeralChatApplication : Application() {
             }
 
             override fun onActivityStopped(activity: android.app.Activity) {
-                foregroundActivities--
+                // 修复：防止计数器变为负数（系统边缘场景可能导致 stopped 多于 started）
+                if (foregroundActivities > 0) foregroundActivities--
             }
 
             override fun onActivityCreated(activity: android.app.Activity, savedInstanceState: Bundle?) {}

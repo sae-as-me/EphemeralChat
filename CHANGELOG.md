@@ -13,6 +13,39 @@ AIGC:
 
 本项目所有重要变更记录于此文件。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.3.2] - 2026-09-26
+
+### 修复（5轮全量代码审计）
+
+**第1轮：BLE 传输层与线程安全**
+- GattClient 断连后 busy/writeQueue 不重置 → 重连后无法发送消息
+- GattClient 通知描述符为 null 时 notificationReady 永不设置 → 卡死
+- GattClient write() 清空正在发送的队列导致分片丢失
+- ChatScreen 临时文件在异步读取前被删除 → 文件找不到
+- ChatViewModel FILE 分支在 BLE 回调线程做 base64 解码+文件写入 → 阻塞 BLE
+- MessageFragmenter nextMsgId 非线程安全 → 并发分片时 msgId 冲突
+- handleReceivedMessage groupId 为空时仍存入数据 → 孤儿数据
+
+**第2轮：竞态与生命周期**
+- GattClient write() 与 onCharacteristicWrite 竞态 → 旧回调删除新队列分片（改为待发队列模式）
+- GattClient sendNextQueued 未检查 writeCharacteristic 返回值 → 队列卡死
+- ChatViewModel leaveGroup/dissolveGroup 未取消 Room Flow Job → 资源泄漏
+- EphemeralChatApplication foregroundActivities 可能变为负数 → 前台判定错误
+
+**第3轮：资源管理与性能**
+- createGroup 中 DB 调用无 try-catch → DB 异常导致协程崩溃
+- compressBitmapToBase64 中 scaledBitmap 未 recycle → 内存泄漏
+- MessageBubble 图片解码在主线程 → 大图 ANR 风险（改为异步加载）
+- MEMBER_SYNC 循环广播无间隔 → BLE 通知栈拥塞丢消息
+
+**第4轮：竞态根治与边界**
+- GattClient write() 与 onCharacteristicWrite 竞态根治：改为 pendingMessages 队列模式，busy 时不打断当前发送
+- FileTransferHelper saveBase64ToFile 扩展名提取修复（处理无扩展名和空扩展名）
+
+**第5轮：一致性验证**
+- 确认前4轮修复无冲突、无引入新问题
+- 全量编译通过
+
 ## [0.3.1] - 2026-09-26
 
 ### 修复（源码审计）

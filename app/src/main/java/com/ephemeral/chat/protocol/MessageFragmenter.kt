@@ -2,6 +2,7 @@ package com.ephemeral.chat.protocol
 
 import android.util.Log
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * 消息分片协议——超过 MTU 的消息自动分片。
@@ -16,8 +17,8 @@ class MessageFragmenter(private val mtu: Int = 247) {
     /** 每片最大 payload = MTU - 3(头) */
     private val maxPayload = mtu - 3
 
-    /** 递增的 msg_id，溢出回绕 */
-    private var nextMsgId = 0
+    /** 递增的 msg_id，溢出回绕（线程安全） */
+    private val nextMsgId = AtomicInteger(0)
 
     /** 重组缓冲区：Map<msgId, Map<seq, ByteArray>> */
     private val reassemblyBuffer = ConcurrentHashMap<Int, MutableMap<Int, ByteArray>>()
@@ -42,8 +43,7 @@ class MessageFragmenter(private val mtu: Int = 247) {
 
         if (data.size <= maxPayload) {
             // 无需分片，单片发送
-            val msgId = nextMsgId
-            nextMsgId = (nextMsgId + 1) and 0xFFFF
+            val msgId = nextMsgId.getAndIncrement() and 0xFFFF
             val header = byteArrayOf(
                 ((msgId shr 8) and 0xFF).toByte(),
                 (msgId and 0xFF).toByte(),
@@ -53,8 +53,7 @@ class MessageFragmenter(private val mtu: Int = 247) {
         }
 
         val fragments = mutableListOf<ByteArray>()
-        val msgId = nextMsgId
-        nextMsgId = (nextMsgId + 1) and 0xFFFF
+        val msgId = nextMsgId.getAndIncrement() and 0xFFFF
 
         var offset = 0
         var seq = 0

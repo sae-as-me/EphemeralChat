@@ -171,28 +171,33 @@ class ChatViewModel @Inject constructor(
                 }
 
                 // 存储群组信息
-                val groupEntity = GroupEntity(
-                    groupId = groupId,
-                    code = code,
-                    hubUuid = myUuid,
-                    isHub = true,
-                    createdAt = System.currentTimeMillis(),
-                    memberCount = 1,
-                    status = GroupStatus.ACTIVE,
-                )
-                storagePlugin.getGroupDao().upsert(groupEntity)
+                try {
+                    val groupEntity = GroupEntity(
+                        groupId = groupId,
+                        code = code,
+                        hubUuid = myUuid,
+                        isHub = true,
+                        createdAt = System.currentTimeMillis(),
+                        memberCount = 1,
+                        status = GroupStatus.ACTIVE,
+                    )
+                    storagePlugin.getGroupDao().upsert(groupEntity)
 
-                // 存储自己为成员
-                val selfMember = MemberEntity(
-                    memberUuid = myUuidShort,
-                    groupId = groupId,
-                    nickname = nickname,
-                    isSelf = true,
-                    status = MemberStatus.ACTIVE,
-                    lastHeartbeat = System.currentTimeMillis(),
-                    joinedAt = System.currentTimeMillis(),
-                )
-                storagePlugin.getMemberDao().upsert(selfMember)
+                    // 存储自己为成员
+                    val selfMember = MemberEntity(
+                        memberUuid = myUuidShort,
+                        groupId = groupId,
+                        nickname = nickname,
+                        isSelf = true,
+                        status = MemberStatus.ACTIVE,
+                        lastHeartbeat = System.currentTimeMillis(),
+                        joinedAt = System.currentTimeMillis(),
+                    )
+                    storagePlugin.getMemberDao().upsert(selfMember)
+                } catch (e: Exception) {
+                    Log.e(TAG, "存储群组信息失败", e)
+                    // DB 失败不应阻断群聊（BLE 已启动，聊天仍可用）
+                }
 
                 // 启动心跳
                 val lifecyclePlugin = registry.getPlugin<LifecyclePlugin>("lifecycle")
@@ -447,6 +452,7 @@ class ChatViewModel @Inject constructor(
         val msgId = UUID.randomUUID().toString()
         val fileId = UUID.randomUUID().toString().take(8)
         val timestamp = System.currentTimeMillis()
+        val sourceFile = java.io.File(imagePath)
 
         _uiState.value = _uiState.value.copy(fileTransferProgress = 0, fileTransferStatus = "正在压缩图片...")
 
@@ -456,6 +462,7 @@ class ChatViewModel @Inject constructor(
                 val (base64Data, compressedSize) = FileTransferHelper.compressImageFileToBase64(imagePath)
                     ?: run {
                         _uiState.value = _uiState.value.copy(fileTransferProgress = -1, errorMessage = "图片压缩失败")
+                        sourceFile.delete()
                         return@launch
                     }
 
@@ -511,9 +518,12 @@ class ChatViewModel @Inject constructor(
 
                 _uiState.value = _uiState.value.copy(fileTransferProgress = -1, fileTransferStatus = "")
                 Log.i(TAG, "图片已发送: $originalName, $compressedSize bytes")
+                // 修复：清理选择器产生的临时文件
+                sourceFile.delete()
             } catch (e: Exception) {
                 Log.e(TAG, "发送图片失败", e)
                 _uiState.value = _uiState.value.copy(fileTransferProgress = -1, errorMessage = "发送图片失败: ${e.message}")
+                sourceFile.delete()
             }
         }
     }
@@ -528,8 +538,7 @@ class ChatViewModel @Inject constructor(
             return
         }
 
-        // 内存安全检查：base64 编码后体积膨胀约 33%，10MB 文件需约 13MB 堆内存
-        // 加上分片 JSON 包装，峰值约 15MB。低端设备可用堆可能不足。
+        // 内存安全检查
         val runtime = Runtime.getRuntime()
         val freeMem = runtime.maxMemory() - (runtime.totalMemory() - runtime.freeMemory())
         val estimatedBase64Size = (fileSize * 1.34).toLong()
@@ -546,6 +555,7 @@ class ChatViewModel @Inject constructor(
         val msgId = UUID.randomUUID().toString()
         val fileId = UUID.randomUUID().toString().take(8)
         val timestamp = System.currentTimeMillis()
+        val sourceFile = java.io.File(filePath)
 
         _uiState.value = _uiState.value.copy(fileTransferProgress = 0, fileTransferStatus = "正在读取文件...")
 
@@ -605,9 +615,12 @@ class ChatViewModel @Inject constructor(
 
                 _uiState.value = _uiState.value.copy(fileTransferProgress = -1, fileTransferStatus = "")
                 Log.i(TAG, "文件已发送: $fileName, $actualSize bytes")
+                // 修复：清理选择器产生的临时文件
+                sourceFile.delete()
             } catch (e: Exception) {
                 Log.e(TAG, "发送文件失败", e)
                 _uiState.value = _uiState.value.copy(fileTransferProgress = -1, errorMessage = "发送文件失败: ${e.message}")
+                sourceFile.delete()
             }
         }
     }
@@ -752,6 +765,9 @@ class ChatViewModel @Inject constructor(
 
             // 回到首页
             _uiState.value = ChatUiState(nickname = nickname, myUuidShort = myUuidShort)
+            // 修复：取消 Room Flow 订阅，防止资源泄漏
+            memberLoadJob?.cancel()
+            messageLoadJob?.cancel()
             stopForegroundService()
             FileTransferHelper.clearAllFiles(EphemeralChatApplication.get())
             Log.i(TAG, "已退出群聊")
@@ -803,6 +819,9 @@ class ChatViewModel @Inject constructor(
 
             // 回到首页
             _uiState.value = ChatUiState(nickname = nickname, myUuidShort = myUuidShort)
+            // 修复：取消 Room Flow 订阅
+            memberLoadJob?.cancel()
+            messageLoadJob?.cancel()
             stopForegroundService()
             FileTransferHelper.clearAllFiles(EphemeralChatApplication.get())
             Log.i(TAG, "群聊已解散")
@@ -824,6 +843,12 @@ class ChatViewModel @Inject constructor(
         try {
             val msg = ChatMessage.fromJson(rawData)
             val groupId = _uiState.value.groupId
+
+            // 修复：群聊已退出时丢弃消息，防止存入孤儿数据
+            if (groupId.isEmpty()) {
+                Log.w(TAG, "收到消息但 groupId 为空，已丢弃: type=${msg.t}")
+                return
+            }
 
             when (ProtocolMessageType.fromCode(msg.t)) {
                 ProtocolMessageType.JOIN -> {
@@ -853,6 +878,8 @@ class ChatViewModel @Inject constructor(
                                 mid = UUID.randomUUID().toString(),
                             )
                             blePlugin.broadcastToClients(syncMsg.toJson().toByteArray())
+                            // 修复：成员同步消息间加小延迟，避免 BLE 通知栈拥塞丢消息
+                            delay(50)
                         }
                         Log.i(TAG, "已广播 ${allMembers.size} 条 MEMBER_SYNC")
                     }
@@ -1022,6 +1049,9 @@ class ChatViewModel @Inject constructor(
                         try { blePlugin.disconnectClient() } catch (e: Exception) { Log.e(TAG, "断开连接失败", e) }
                     }
                     _uiState.value = ChatUiState(nickname = nickname, myUuidShort = myUuidShort)
+                    // 修复：取消 Room Flow 订阅
+                    memberLoadJob?.cancel()
+                    messageLoadJob?.cancel()
                     stopForegroundService()
                 }
 
@@ -1056,9 +1086,11 @@ class ChatViewModel @Inject constructor(
                 }
 
                 ProtocolMessageType.FILE -> {
-                    // 收到文件/图片消息：解析元信息+base64数据，保存到本地
+                    // 收到文件/图片消息：在 IO 线程解析+保存（base64 解码和文件写入是重操作）
+                    val rawMsg = msg
+                    viewModelScope.launch(Dispatchers.IO) {
                     try {
-                        val payload = JSONObject(msg.c ?: "")
+                        val payload = JSONObject(rawMsg.c ?: "")
                         val metaJson = payload.optString("meta", "")
                         val base64Data = payload.optString("data", "")
 
@@ -1068,7 +1100,7 @@ class ChatViewModel @Inject constructor(
 
                         val meta = FileTransferHelper.FileMetaData.fromJson(metaJson)
                         val context = EphemeralChatApplication.get()
-                        val fileId = msg.mid ?: UUID.randomUUID().toString().take(8)
+                        val fileId = rawMsg.mid ?: UUID.randomUUID().toString().take(8)
 
                         _uiState.value = _uiState.value.copy(fileTransferProgress = 50, fileTransferStatus = "正在接收${if (meta.isImage) "图片" else "文件"}...")
 
@@ -1081,13 +1113,13 @@ class ChatViewModel @Inject constructor(
 
                         runDb {
                             val msgEntity = MessageEntity(
-                                msgId = msg.mid ?: UUID.randomUUID().toString(),
+                                msgId = rawMsg.mid ?: UUID.randomUUID().toString(),
                                 groupId = groupId,
-                                senderUuid = msg.u,
-                                senderName = msg.n ?: "未知",
+                                senderUuid = rawMsg.u,
+                                senderName = rawMsg.n ?: "未知",
                                 content = updatedMeta.toJson(),
                                 type = if (meta.isImage) MessageType.IMAGE else MessageType.FILE,
-                                timestamp = msg.ts,
+                                timestamp = rawMsg.ts,
                                 isDelivered = true,
                             )
                             storagePlugin.getMessageDao().upsert(msgEntity)
@@ -1097,8 +1129,8 @@ class ChatViewModel @Inject constructor(
                         Log.i(TAG, "收到${if (meta.isImage) "图片" else "文件"}: ${meta.fileName}, ${meta.fileSize} bytes")
 
                         // 后台通知
-                        if (msg.u != myUuidShort) {
-                            val title = if (meta.isImage) "${msg.n ?: "好友"} 发送了图片" else "${msg.n ?: "好友"} 发送了文件"
+                        if (rawMsg.u != myUuidShort) {
+                            val title = if (meta.isImage) "${rawMsg.n ?: "好友"} 发送了图片" else "${rawMsg.n ?: "好友"} 发送了文件"
                             maybeNotifyBackgroundNotification(title, meta.fileName)
                         }
                         } // end else
@@ -1106,6 +1138,7 @@ class ChatViewModel @Inject constructor(
                         Log.e(TAG, "接收文件失败", e)
                         _uiState.value = _uiState.value.copy(fileTransferProgress = -1, errorMessage = "接收文件失败")
                     }
+                    } // end IO launch
                 }
 
                 else -> {
@@ -1309,6 +1342,9 @@ class ChatViewModel @Inject constructor(
             Log.e(TAG, "取消创建时清理失败", e)
         }
         _uiState.value = ChatUiState(nickname = nickname, myUuidShort = myUuidShort)
+        // 修复：取消 Room Flow 订阅
+        memberLoadJob?.cancel()
+        messageLoadJob?.cancel()
         stopForegroundService()
         FileTransferHelper.clearAllFiles(EphemeralChatApplication.get())
         Log.i(TAG, "已取消创建群聊")

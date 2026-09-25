@@ -42,6 +42,9 @@ class GattClient(private val context: Context) {
     private val writeQueue = ArrayDeque<ByteArray>()
     private var busy = false
 
+    // 修复：待发消息队列，busy 时不打断当前发送，排队等候
+    private val pendingMessages = ArrayDeque<ByteArray>()
+
     private val gattCallback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(bluetoothGatt: BluetoothGatt, status: Int, newState: Int) {
             when (newState) {
@@ -51,6 +54,9 @@ class GattClient(private val context: Context) {
                 }
                 BluetoothProfile.STATE_DISCONNECTED -> {
                     Log.i(TAG, "GATT 连接断开")
+                    writeQueue.clear()
+                    pendingMessages.clear()
+                    busy = false
                     onDisconnected?.invoke()
                     gatt = null
                 }
@@ -133,10 +139,20 @@ class GattClient(private val context: Context) {
             status: Int,
         ) {
             Log.d(TAG, "写入完成: status=$status")
-            // 发送队列中下一片（分片消息必须串行发送）
+            // 修复：移除已完成的分片，发送下一片或处理待发消息
             writeQueue.removeFirstOrNull()
-            busy = false
-            sendNextQueued()
+            if (writeQueue.isNotEmpty()) {
+                // 当前消息还有分片未发
+                busy = true
+                writeNextFragment(bluetoothGatt)
+            } else {
+                // 当前消息全部发送完毕
+                busy = false
+                // 检查是否有待发消息
+                pendingMessages.removeFirstOrNull()?.let { nextData ->
+                    startWriting(bluetoothGatt, nextData)
+                }
+            }
         }
     }
 
@@ -151,9 +167,17 @@ class GattClient(private val context: Context) {
             if (descriptor != null) {
                 descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
                 bluetoothGatt.writeDescriptor(descriptor)
+            } else {
+                // 修复：descriptor 不存在时也标记就绪，否则 onConnected 永不回调→卡死
+                Log.w(TAG, "通知描述符不存在，回退为只写模式")
+                notificationReady = true
+                onConnected?.invoke()
             }
         } catch (e: Exception) {
-            Log.e(TAG, "启用通知失败", e)
+            // 修复：异常时也标记就绪
+            Log.e(TAG, "启用通知失败，回退为只写模式", e)
+            notificationReady = true
+            onConnected?.invoke()
         }
     }
 
@@ -193,29 +217,55 @@ class GattClient(private val context: Context) {
             return false
         }
 
-        val fragments = fragmenter.fragment(data)
-        writeQueue.clear()
-        writeQueue.addAll(fragments)
-        sendNextQueued()
+        // 修复：如果正在发送，排队等候，不打断当前发送
+        if (busy) {
+            pendingMessages.addLast(data)
+            Log.d(TAG, "正在发送中，消息已排队 (pending=${pendingMessages.size})")
+            return true
+        }
+
+        startWriting(currentGatt, data)
         return true
     }
 
-    /** 串行发送队列中的下一片 */
-    private fun sendNextQueued() {
-        if (busy) return
-        val currentGatt = gatt ?: return
+    /**
+     * 开始发送一条新消息：分片并写入第一片。
+     */
+    private fun startWriting(gatt: BluetoothGatt, data: ByteArray) {
+        val fragments = fragmenter.fragment(data)
+        writeQueue.clear()
+        writeQueue.addAll(fragments)
+        busy = true
+        writeNextFragment(gatt)
+    }
+
+    /** 写入队列中的第一片 */
+    private fun writeNextFragment(gatt: BluetoothGatt) {
         val char = commandChar ?: return
         val next = writeQueue.firstOrNull() ?: return
-        busy = true
         try {
             char.value = next
             char.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-            currentGatt.writeCharacteristic(char)
+            val success = gatt.writeCharacteristic(char)
+            if (!success) {
+                Log.w(TAG, "writeCharacteristic 返回 false，跳过当前分片")
+                writeQueue.removeFirstOrNull()
+                if (writeQueue.isNotEmpty()) {
+                    writeNextFragment(gatt)
+                } else {
+                    busy = false
+                    pendingMessages.removeFirstOrNull()?.let { startWriting(gatt, it) }
+                }
+            }
         } catch (e: Exception) {
             Log.e(TAG, "写入分片异常", e)
             writeQueue.removeFirstOrNull()
-            busy = false
-            sendNextQueued()
+            if (writeQueue.isNotEmpty()) {
+                writeNextFragment(gatt)
+            } else {
+                busy = false
+                pendingMessages.removeFirstOrNull()?.let { startWriting(gatt, it) }
+            }
         }
     }
 
@@ -224,6 +274,7 @@ class GattClient(private val context: Context) {
      */
     fun disconnect() {
         writeQueue.clear()
+        pendingMessages.clear()
         busy = false
         notificationReady = false
         gatt?.disconnect()
