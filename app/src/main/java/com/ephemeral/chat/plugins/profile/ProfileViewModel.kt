@@ -20,7 +20,7 @@ class ProfileViewModel @Inject constructor() : ViewModel() {
         val currentNickname: String = "",
         val isDarkTheme: Boolean = true,
         val showNotifications: Boolean = false,
-        val appVersion: String = "0.1",
+        val appVersion: String = com.ephemeral.chat.BuildConfig.VERSION_NAME,
     )
 
     private val _uiState = MutableStateFlow(

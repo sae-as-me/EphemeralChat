@@ -46,6 +46,18 @@ fun CreateGroupScreen(viewModel: ChatViewModel) {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
+        // 显示错误提示（如设备不支持 BLE 广播）
+        state.errorMessage?.let { error ->
+            Text(
+                text = error,
+                fontSize = adaptiveSp(12f),
+                color = MaterialTheme.colorScheme.secondary,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth().padding(adaptiveDp(8f)),
+            )
+            Spacer(modifier = Modifier.height(adaptiveDp(16f)))
+        }
+
         when {
             // 无活跃群聊：创建/加入入口
             state.groupId.isEmpty() -> {

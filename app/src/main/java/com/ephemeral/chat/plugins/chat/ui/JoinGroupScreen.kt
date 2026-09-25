@@ -53,7 +53,7 @@ fun JoinGroupScreen(viewModel: ChatViewModel) {
                 if (newValue.length <= 4 && newValue.all { c -> c.isDigit() }) code = newValue
             },
             modifier = Modifier.width(adaptiveDp(200f)),
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
             placeholder = { Text("0000", fontSize = adaptiveSp(24f)) },
             singleLine = true,
         )
