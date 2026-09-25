@@ -60,6 +60,9 @@ class ChatViewModel @Inject constructor(
     private var memberLoadJob: Job? = null
     private var messageLoadJob: Job? = null
 
+    /** JOIN_ACK 等待超时保护 Job */
+    private var joinAckTimeoutJob: Job? = null
+
     /** UI 状态 */
     data class ChatUiState(
         val screen: Screen = Screen.Home,
@@ -114,6 +117,15 @@ class ChatViewModel @Inject constructor(
         val locationPlugin = registry.getPlugin<LocationPlugin>("location") ?: return
         val blePlugin = registry.getPlugin<BlePlugin>("ble") ?: return
         val storagePlugin = registry.getPlugin<StoragePlugin>("storage") ?: return
+
+        // 预检：设备不支持 BLE 广播时无法创建群聊，提前提示（避免创建后对方搜不到）
+        if (!blePlugin.canAdvertise()) {
+            _uiState.value = _uiState.value.copy(
+                errorMessage = "当前设备不支持发起群聊（BLE 广播不可用），请由对方设备创建群聊后加入",
+            )
+            Log.w(TAG, "设备不支持 BLE 广播，无法创建群聊")
+            return
+        }
 
         val code = cryptoPlugin.generateInviteCode()
         val groupId = UUID.randomUUID().toString()
@@ -286,10 +298,26 @@ class ChatViewModel @Inject constructor(
                             handleReceivedMessage(String(data, Charsets.UTF_8))
                         }
 
-                        // 发送 join 消息
+                        // 发送 join 消息（等待 GATT 连接 + 通知订阅就绪后再发，不再盲等 1 秒）
                         viewModelScope.launch {
                             try {
-                                delay(1000) // 等待连接建立
+                                var ready = false
+                                repeat(20) { // 最多等待 10 秒
+                                    if (blePlugin.isClientReady()) {
+                                        ready = true
+                                        return@repeat
+                                    }
+                                    delay(500)
+                                }
+                                if (!ready) {
+                                    Log.w(TAG, "GATT 连接就绪超时")
+                                    _uiState.value = _uiState.value.copy(
+                                        errorMessage = "连接超时，请确认对方设备蓝牙已开启后重试",
+                                        connectionStatus = ConnectionStatus.Disconnected,
+                                    )
+                                    return@launch
+                                }
+
                                 val joinMsg = ChatMessage(
                                     t = ProtocolMessageType.JOIN.code,
                                     u = myUuidShort,
@@ -298,7 +326,17 @@ class ChatViewModel @Inject constructor(
                                     ts = System.currentTimeMillis(),
                                     mid = UUID.randomUUID().toString(),
                                 )
-                                blePlugin.writeToHub(joinMsg.toJson().toByteArray())
+                                val sent = blePlugin.writeToHub(joinMsg.toJson().toByteArray())
+                                if (sent) {
+                                    Log.i(TAG, "JOIN 消息已发送")
+                                    startJoinAckTimeout()
+                                } else {
+                                    Log.e(TAG, "JOIN 写入失败")
+                                    _uiState.value = _uiState.value.copy(
+                                        errorMessage = "加入消息发送失败，请重试",
+                                        connectionStatus = ConnectionStatus.Disconnected,
+                                    )
+                                }
                             } catch (e: Exception) {
                                 Log.e(TAG, "发送 join 消息失败", e)
                             }
@@ -610,6 +648,7 @@ class ChatViewModel @Inject constructor(
 
                 ProtocolMessageType.JOIN_ACK -> {
                     // Client 处理加入确认：跳转群聊 + 本地欢迎系统消息
+                    joinAckTimeoutJob?.cancel()
                     _uiState.value = _uiState.value.copy(
                         screen = Screen.Chat,
                         connectionStatus = ConnectionStatus.Connected,
@@ -890,9 +929,27 @@ class ChatViewModel @Inject constructor(
     }
 
     /**
+     * 等待 JOIN_ACK 的超时保护：25 秒未收到则提示，避免无限卡在"正在连接"。
+     */
+    private fun startJoinAckTimeout() {
+        joinAckTimeoutJob?.cancel()
+        joinAckTimeoutJob = viewModelScope.launch {
+            delay(25_000)
+            if (_uiState.value.screen == Screen.Join) {
+                _uiState.value = _uiState.value.copy(
+                    errorMessage = "加入超时，请确认对方已创建群聊且蓝牙在线，再试一次",
+                    connectionStatus = ConnectionStatus.Disconnected,
+                )
+                Log.w(TAG, "JOIN_ACK 等待超时")
+            }
+        }
+    }
+
+    /**
      * 取消创建：停止 BLE 活动并回到干净的首页（用于创建等待页的“取消”）。
      */
     fun cancelGroupCreation() {
+        joinAckTimeoutJob?.cancel()
         try {
             registry.getPlugin<LifecyclePlugin>("lifecycle")?.stopHeartbeat()
             registry.getPlugin<BlePlugin>("ble")?.stopAdvertising()

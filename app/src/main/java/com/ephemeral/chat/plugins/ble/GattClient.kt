@@ -31,6 +31,9 @@ class GattClient(private val context: Context) {
     var onConnected: (() -> Unit)? = null
     var onDisconnected: (() -> Unit)? = null
 
+    /** 通知订阅是否已就绪（Server 广播/通知才能可靠接收） */
+    private var notificationReady = false
+
     /**
      * 分片器：每片固定 20 字节（含 3 字节头），保证在任意 MTU（即使协商失败降为 23）下
      * 消息都能完整送达 Server。Server 端按 msgId+seq 重组。
@@ -69,24 +72,32 @@ class GattClient(private val context: Context) {
             commandChar = service.getCharacteristic(UUID.fromString(BleConstants.COMMAND_UUID))
             notificationChar = service.getCharacteristic(UUID.fromString(BleConstants.NOTIFICATION_UUID))
 
-            // 请求 MTU 247
-            bluetoothGatt.requestMtu(BleConstants.REQUESTED_MTU)
+            // 立即启用通知（不依赖 MTU 协商结果），确保能收到 Server 的 JOIN_ACK/成员同步
+            enableNotification(bluetoothGatt)
+
+            // 尝试协商更大 MTU（可选优化，失败不影响通信）
+            try {
+                bluetoothGatt.requestMtu(BleConstants.REQUESTED_MTU)
+            } catch (e: Exception) {
+                Log.w(TAG, "请求 MTU 异常: ${e.message}")
+            }
         }
 
         override fun onMtuChanged(bluetoothGatt: BluetoothGatt, mtu: Int, status: Int) {
             Log.i(TAG, "MTU 协商完成: $mtu, status=$status")
+        }
 
-            // 启用通知
-            notificationChar?.let { char ->
-                val descriptor = char.getDescriptor(UUID.fromString(BleConstants.CLIENT_CONFIG_UUID))
-                if (descriptor != null) {
-                    descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                    bluetoothGatt.writeDescriptor(descriptor)
-                    bluetoothGatt.setCharacteristicNotification(char, true)
-                }
+        override fun onDescriptorWrite(
+            bluetoothGatt: BluetoothGatt,
+            descriptor: BluetoothGattDescriptor,
+            status: Int,
+        ) {
+            Log.d(TAG, "描述符写入完成: status=$status")
+            // 通知订阅已启用——此时才能真正可靠收到 Server 广播，作为“连接就绪”信号
+            if (status == BluetoothGatt.GATT_SUCCESS && descriptor.uuid == UUID.fromString(BleConstants.CLIENT_CONFIG_UUID)) {
+                notificationReady = true
+                onConnected?.invoke()
             }
-
-            onConnected?.invoke()
         }
 
         override fun onCharacteristicChanged(
@@ -114,6 +125,23 @@ class GattClient(private val context: Context) {
             writeQueue.removeFirstOrNull()
             busy = false
             sendNextQueued()
+        }
+    }
+
+    /**
+     * 启用通知订阅（在服务发现后立即调用，不依赖 MTU 协商）。
+     */
+    private fun enableNotification(bluetoothGatt: BluetoothGatt) {
+        val char = notificationChar ?: return
+        try {
+            bluetoothGatt.setCharacteristicNotification(char, true)
+            val descriptor = char.getDescriptor(UUID.fromString(BleConstants.CLIENT_CONFIG_UUID))
+            if (descriptor != null) {
+                descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                bluetoothGatt.writeDescriptor(descriptor)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "启用通知失败", e)
         }
     }
 
@@ -185,6 +213,7 @@ class GattClient(private val context: Context) {
     fun disconnect() {
         writeQueue.clear()
         busy = false
+        notificationReady = false
         gatt?.disconnect()
         gatt?.close()
         gatt = null
@@ -194,7 +223,13 @@ class GattClient(private val context: Context) {
     }
 
     /**
-     * 是否已连接。
+     * 是否已连接（GATT 层）。
      */
     fun isConnected(): Boolean = gatt != null
+
+    /**
+     * 是否完全就绪：GATT 已连接 + 命令特征已发现 + 通知订阅已启用。
+     * 只有就绪后才能可靠发送指令并接收回复。
+     */
+    fun isReady(): Boolean = gatt != null && commandChar != null && notificationReady
 }

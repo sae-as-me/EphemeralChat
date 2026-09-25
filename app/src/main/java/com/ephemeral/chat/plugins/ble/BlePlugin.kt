@@ -137,4 +137,14 @@ class BlePlugin : IPlugin {
     // ---- 工具方法 ----
 
     fun isBluetoothEnabled(): Boolean = adapter?.isEnabled == true
+
+    /**
+     * Client 是否已就绪（GATT 连接 + 命令特征 + 通知订阅全部就绪）。
+     */
+    fun isClientReady(): Boolean = gattClient?.isReady() == true
+
+    /**
+     * 设备是否支持 BLE 广播（创建群聊前预检）。
+     */
+    fun canAdvertise(): Boolean = adapter?.isMultipleAdvertisementSupported == true
 }
