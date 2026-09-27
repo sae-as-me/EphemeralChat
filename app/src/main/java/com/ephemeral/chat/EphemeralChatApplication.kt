@@ -11,6 +11,9 @@ import com.ephemeral.chat.plugins.crypto.CryptoPlugin
 import com.ephemeral.chat.plugins.lifecycle.LifecyclePlugin
 import com.ephemeral.chat.plugins.location.LocationPlugin
 import com.ephemeral.chat.plugins.profile.ProfilePlugin
+import com.ephemeral.chat.plugins.emoji.EmojiPlugin
+import com.ephemeral.chat.plugins.game.numberbomb.NumberBombPlugin
+import com.ephemeral.chat.plugins.game.whospy.SpyPlugin
 import com.ephemeral.chat.plugins.storage.StoragePlugin
 import dagger.hilt.android.HiltAndroidApp
 import javax.inject.Inject
@@ -73,6 +76,9 @@ class EphemeralChatApplication : Application() {
             pluginRegistry.register(BlePlugin())
             pluginRegistry.register(LifecyclePlugin())
             pluginRegistry.register(ChatPlugin())
+            pluginRegistry.register(EmojiPlugin())
+            pluginRegistry.register(NumberBombPlugin())
+            pluginRegistry.register(SpyPlugin())
             pluginRegistry.register(ProfilePlugin())
 
             pluginRegistry.startAll()

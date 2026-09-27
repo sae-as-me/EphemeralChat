@@ -37,6 +37,7 @@ import kotlinx.coroutines.Job
 import org.json.JSONObject
 import java.security.PublicKey
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import javax.crypto.SecretKey
 import javax.inject.Inject
 
@@ -70,6 +71,9 @@ class ChatViewModel @Inject constructor(
     /** JOIN_ACK 等待超时保护 Job */
     private var joinAckTimeoutJob: Job? = null
 
+    /** Hub 侧：成员短UUID → 设备MAC地址映射（游戏插件定向发牌用） */
+    private val memberDeviceMap = ConcurrentHashMap<String, String>()
+
     /** UI 状态 */
     data class ChatUiState(
         val screen: Screen = Screen.Home,
@@ -92,7 +96,7 @@ class ChatViewModel @Inject constructor(
         val previewImagePath: String? = null,
     )
 
-    enum class Screen { Home, Create, Join, Chat, Members }
+    enum class Screen { Home, Create, Join, Chat, Members, GameList, NumberBomb, WhoIsSpy }
     enum class ConnectionStatus { Disconnected, Scanning, Connecting, Connected, Reconnecting }
 
     private val _uiState = MutableStateFlow(ChatUiState(nickname = nickname, myUuidShort = myUuidShort))
@@ -165,9 +169,9 @@ class ChatViewModel @Inject constructor(
                     Log.e(TAG, "广播失败: $errorMsg")
                 }
 
-                // 启动 GATT Server 接收消息
-                blePlugin.startGattServer { data ->
-                    handleReceivedMessage(String(data, Charsets.UTF_8))
+                // 启动 GATT Server 接收消息（带来源设备地址，供游戏定向发牌）
+                blePlugin.startGattServer { data, sourceAddress ->
+                    handleReceivedMessage(String(data, Charsets.UTF_8), sourceAddress)
                 }
 
                 // 存储群组信息
@@ -437,6 +441,113 @@ class ChatViewModel @Inject constructor(
             Log.e(TAG, "BLE 发送消息异常", e)
         }
     }
+
+    // ---- 游戏消息发送 ----
+
+    /**
+     * 广播游戏消息给全体成员（Hub 端调用）。
+     *
+     * @param gid 游戏 ID
+     * @param act 动作
+     * @param data 动作数据 JSON
+     * @return true 表示已提交发送
+     */
+    fun sendGameBroadcast(gid: String, act: String, data: String = "{}"): Boolean {
+        val blePlugin = registry.getPlugin<BlePlugin>("ble") ?: return false
+        val groupId = _uiState.value.groupId
+        if (!_uiState.value.isHub) return false
+
+        val payload = com.ephemeral.chat.protocol.GameMessagePayload(
+            gid = gid, act = act, data = data, priv = false,
+        )
+        val msg = ChatMessage(
+            t = ProtocolMessageType.GAME.code,
+            u = myUuidShort,
+            g = groupId.take(4),
+            ts = System.currentTimeMillis(),
+            mid = UUID.randomUUID().toString(),
+        ).let { base ->
+            // GAME 消息的 c 字段放 payload JSON
+            ChatMessage(
+                t = base.t, u = base.u, n = base.n, c = payload.toJson(),
+                g = base.g, ts = base.ts, mid = base.mid,
+            )
+        }
+        return try {
+            blePlugin.broadcastToClients(msg.toJson().toByteArray())
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "游戏广播失败", e)
+            false
+        }
+    }
+
+    /**
+     * 定向发送游戏消息给指定成员（Hub 端调用，秘密发牌等场景）。
+     *
+     * @param gid 游戏 ID
+     * @param act 动作
+     * @param targetUuid 目标成员短 UUID
+     * @param data 动作数据 JSON
+     * @return true 表示已提交发送
+     */
+    fun sendGamePrivate(gid: String, act: String, targetUuid: String, data: String = "{}"): Boolean {
+        val blePlugin = registry.getPlugin<BlePlugin>("ble") ?: return false
+        if (!_uiState.value.isHub) return false
+
+        val deviceAddress = memberDeviceMap[targetUuid] ?: run {
+            Log.w(TAG, "定向发送失败：成员 $targetUuid 不在线或未记录设备地址")
+            return false
+        }
+
+        val payload = com.ephemeral.chat.protocol.GameMessagePayload(
+            gid = gid, act = act, data = data, priv = true,
+        )
+        val msg = ChatMessage(
+            t = ProtocolMessageType.GAME.code,
+            u = myUuidShort,
+            c = payload.toJson(),
+            g = _uiState.value.groupId.take(4),
+            ts = System.currentTimeMillis(),
+            mid = UUID.randomUUID().toString(),
+        )
+        return try {
+            blePlugin.sendToDevice(deviceAddress, msg.toJson().toByteArray())
+        } catch (e: Exception) {
+            Log.e(TAG, "游戏定向发送失败", e)
+            false
+        }
+    }
+
+    /**
+     * Client 端发送游戏消息给 Hub（如玩家操作指令）。
+     */
+    fun sendGameToHub(gid: String, act: String, data: String = "{}"): Boolean {
+        val blePlugin = registry.getPlugin<BlePlugin>("ble") ?: return false
+
+        val payload = com.ephemeral.chat.protocol.GameMessagePayload(
+            gid = gid, act = act, data = data, priv = false,
+        )
+        val msg = ChatMessage(
+            t = ProtocolMessageType.GAME.code,
+            u = myUuidShort,
+            c = payload.toJson(),
+            g = _uiState.value.groupId.take(4),
+            ts = System.currentTimeMillis(),
+            mid = UUID.randomUUID().toString(),
+        )
+        return try {
+            blePlugin.writeToHub(msg.toJson().toByteArray())
+        } catch (e: Exception) {
+            Log.e(TAG, "游戏消息发送失败", e)
+            false
+        }
+    }
+
+    /**
+     * 获取当前群成员短 UUID 列表（游戏插件发牌用）。
+     */
+    fun getMemberUuids(): List<String> = _uiState.value.members.map { it.memberUuid }
 
     // ---- 文件/图片发送 ----
 
@@ -768,6 +879,7 @@ class ChatViewModel @Inject constructor(
             // 修复：取消 Room Flow 订阅，防止资源泄漏
             memberLoadJob?.cancel()
             messageLoadJob?.cancel()
+            memberDeviceMap.clear()
             stopForegroundService()
             FileTransferHelper.clearAllFiles(EphemeralChatApplication.get())
             Log.i(TAG, "已退出群聊")
@@ -822,6 +934,7 @@ class ChatViewModel @Inject constructor(
             // 修复：取消 Room Flow 订阅
             memberLoadJob?.cancel()
             messageLoadJob?.cancel()
+            memberDeviceMap.clear()
             stopForegroundService()
             FileTransferHelper.clearAllFiles(EphemeralChatApplication.get())
             Log.i(TAG, "群聊已解散")
@@ -834,7 +947,7 @@ class ChatViewModel @Inject constructor(
      * 处理收到的消息。
      * 解析 JSON → 按 t 分发到对应处理逻辑。
      */
-    private fun handleReceivedMessage(rawData: String) {
+    private fun handleReceivedMessage(rawData: String, sourceAddress: String? = null) {
         val storagePlugin = registry.getPlugin<StoragePlugin>("storage") ?: return
         val cryptoPlugin = registry.getPlugin<CryptoPlugin>("crypto") ?: return
         val blePlugin = registry.getPlugin<BlePlugin>("ble") ?: return
@@ -848,6 +961,11 @@ class ChatViewModel @Inject constructor(
             if (groupId.isEmpty()) {
                 Log.w(TAG, "收到消息但 groupId 为空，已丢弃: type=${msg.t}")
                 return
+            }
+
+            // Hub 侧：维护成员短UUID→设备MAC地址映射（游戏插件定向发牌用）
+            if (_uiState.value.isHub && sourceAddress != null && msg.u.isNotEmpty()) {
+                memberDeviceMap[msg.u] = sourceAddress
             }
 
             when (ProtocolMessageType.fromCode(msg.t)) {
@@ -1141,6 +1259,32 @@ class ChatViewModel @Inject constructor(
                     } // end IO launch
                 }
 
+                ProtocolMessageType.GAME -> {
+                    // 游戏消息：通过 EventBus 转发给对应游戏插件处理
+                    try {
+                        val payload = com.ephemeral.chat.protocol.GameMessagePayload.fromJson(msg.c ?: "")
+                        if (payload != null && payload.gid.isNotEmpty()) {
+                            Log.d(TAG, "GAME msg: gid=${payload.gid}, act=${payload.act}, from=${msg.u}, priv=${payload.priv}")
+                            viewModelScope.launch {
+                                eventBus.publish(
+                                    "game_${payload.gid}",
+                                    com.ephemeral.chat.core.eventbus.AppEvent.GameMessage(
+                                        senderUuid = msg.u,
+                                        senderName = msg.n ?: "",
+                                        action = payload.act,
+                                        data = payload.data,
+                                        isPrivate = payload.priv,
+                                    ),
+                                )
+                            }
+                        } else {
+                            Log.w(TAG, "GAME msg parse failed: ${msg.c?.take(50)}")
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "GAME msg handling failed", e)
+                    }
+                }
+
                 else -> {
                     Log.d(TAG, "未处理的消息类型: ${msg.t}")
                 }
@@ -1170,6 +1314,27 @@ class ChatViewModel @Inject constructor(
      */
     fun showMembers() {
         _uiState.value = _uiState.value.copy(screen = Screen.Members)
+    }
+
+    /**
+     * 导航到游戏列表页。
+     */
+    fun showGameList() {
+        _uiState.value = _uiState.value.copy(screen = Screen.GameList)
+    }
+
+    /**
+     * 导航到数字炸弹游戏页。
+     */
+    fun showNumberBomb() {
+        _uiState.value = _uiState.value.copy(screen = Screen.NumberBomb)
+    }
+
+    /**
+     * 导航到谁是卧底游戏页。
+     */
+    fun showWhoIsSpy() {
+        _uiState.value = _uiState.value.copy(screen = Screen.WhoIsSpy)
     }
 
     /**
@@ -1345,6 +1510,7 @@ class ChatViewModel @Inject constructor(
         // 修复：取消 Room Flow 订阅
         memberLoadJob?.cancel()
         messageLoadJob?.cancel()
+        memberDeviceMap.clear()
         stopForegroundService()
         FileTransferHelper.clearAllFiles(EphemeralChatApplication.get())
         Log.i(TAG, "已取消创建群聊")
