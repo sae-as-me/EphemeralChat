@@ -19,10 +19,12 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextAlign
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -34,6 +36,7 @@ import com.ephemeral.chat.core.ui.adaptive.adaptiveDp
 import com.ephemeral.chat.core.ui.adaptive.adaptiveSp
 import com.ephemeral.chat.plugins.chat.ui.collectAsStateLifecycle
 import com.ephemeral.chat.plugins.profile.ProfileViewModel
+import kotlinx.coroutines.launch
 
 /**
  * 个人信息界面。
@@ -167,12 +170,108 @@ fun ProfileScreen() {
         HorizontalDivider()
         Spacer(modifier = Modifier.height(adaptiveDp(16f)))
 
-        // ---- 版本号 ----
+        // ---- 版本号 + 检查更新 ----
         Text(
             text = "版本 ${state.appVersion}",
             fontSize = adaptiveSp(14f),
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+
+        Spacer(modifier = Modifier.height(adaptiveDp(12f)))
+
+        // 检查更新按钮
+        var isChecking by remember { mutableStateOf(false) }
+        var isDownloading by remember { mutableStateOf(false) }
+        var downloadProgress by remember { mutableStateOf(0) }
+        var updateResult by remember { mutableStateOf<String?>(null) }
+        var pendingApkUrl by remember { mutableStateOf<String?>(null) }
+        val scope = rememberCoroutineScope()
+        val context = LocalContext.current
+
+        if (!isDownloading) {
+            Button(
+                onClick = {
+                    if (isChecking) return@Button
+                    isChecking = true
+                    updateResult = null
+                    scope.launch {
+                        val info = com.ephemeral.chat.service.UpdateHelper.checkUpdate()
+                        isChecking = false
+                        if (info == null) {
+                            updateResult = "检查更新失败，请检查网络后重试"
+                        } else if (info.hasUpdate) {
+                            updateResult = "发现新版本 v${info.latestVersion}"
+                            pendingApkUrl = info.downloadUrl
+                        } else {
+                            updateResult = "当前已是最新版本"
+                        }
+                    }
+                },
+                enabled = !isChecking,
+                modifier = Modifier.fillMaxWidth(0.6f),
+            ) {
+                Text(
+                    text = if (isChecking) "正在检查..." else "检查更新",
+                    fontSize = adaptiveSp(14f),
+                )
+            }
+        } else {
+            // 下载进度
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Text(
+                    text = if (downloadProgress >= 0) "正在下载 $downloadProgress%" else "下载失败",
+                    fontSize = adaptiveSp(13f),
+                    color = if (downloadProgress >= 0) MaterialTheme.colorScheme.onSurfaceVariant
+                        else MaterialTheme.colorScheme.error,
+                )
+                Spacer(modifier = Modifier.height(adaptiveDp(4f)))
+                androidx.compose.material3.LinearProgressIndicator(
+                    progress = { downloadProgress / 100f },
+                    modifier = Modifier.fillMaxWidth(0.8f),
+                )
+            }
+        }
+
+        updateResult?.let { result ->
+            Spacer(modifier = Modifier.height(adaptiveDp(8f)))
+            Text(
+                text = result,
+                fontSize = adaptiveSp(12f),
+                color = if (result.startsWith("发现")) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            // 有新版本时显示下载按钮
+            if (result.startsWith("发现") && pendingApkUrl != null && !isDownloading) {
+                Spacer(modifier = Modifier.height(adaptiveDp(8f)))
+                Button(
+                    onClick = {
+                        isDownloading = true
+                        downloadProgress = 0
+                        scope.launch {
+                            val apkFile = com.ephemeral.chat.service.UpdateHelper.downloadApk(
+                                context,
+                                pendingApkUrl!!,
+                            ) { progress ->
+                                downloadProgress = progress
+                                if (progress < 0) isDownloading = false
+                            }
+                            if (apkFile != null) {
+                                isDownloading = false
+                                com.ephemeral.chat.service.UpdateHelper.installApk(context, apkFile)
+                            }
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(0.6f),
+                ) {
+                    Text("下载并安装", fontSize = adaptiveSp(14f))
+                }
+            }
+        }
 
         Spacer(modifier = Modifier.height(adaptiveDp(32f)))
 

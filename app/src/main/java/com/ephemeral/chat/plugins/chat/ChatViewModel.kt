@@ -59,10 +59,11 @@ class ChatViewModel @Inject constructor(
     /** 本机 UUID 短码（4 位），用于协议传输与本地成员存储的主键，保证自consistent */
     private val myUuidShort: String = myUuid.take(4)
 
-    /** 当前昵称——优先使用 SharedStateManager 中已持久化的昵称，无则生成随机昵称 */
+    /** 当前昵称——优先使用 SharedStateManager 中已持久化的昵称，无则生成随机昵称。
+     *  修复：不再在构造时用随机昵称覆盖存储（DataStore 异步加载未完成时 read 到空会误覆盖），
+     *  改为 init 中持续监听全局昵称变化（含 DataStore 加载完成后的回填）。 */
     private var nickname: String = SharedStateManager.nickname.value
         .ifEmpty { NicknameGenerator.generate() }
-        .also { SharedStateManager.setNickname(it) }
 
     /** 群数据加载 Job（切换群聊时取消旧的，避免重复收集） */
     private var memberLoadJob: Job? = null
@@ -94,6 +95,19 @@ class ChatViewModel @Inject constructor(
         val fileTransferStatus: String = "",
         /** 全屏预览图片的本地路径（非空时显示预览） */
         val previewImagePath: String? = null,
+        /** 游戏邀请信息（非空时聊天页弹窗） */
+        val gameInvite: GameInvite? = null,
+    )
+
+    /** 游戏邀请信息 */
+    data class GameInvite(
+        val gameId: String,        // "numberBomb" | "whoIsSpy"
+        val gameName: String,      // "数字炸弹" | "谁是卧底"
+        val inviterName: String,   // 发起人昵称
+        val acceptedCount: Int = 0,
+        val totalCount: Int = 0,
+        val hasAccepted: Boolean = false,  // 我是否已同意
+        val hasDeclined: Boolean = false,  // 我是否已拒绝
     )
 
     enum class Screen { Home, Create, Join, Chat, Members, GameList, NumberBomb, WhoIsSpy }
@@ -118,6 +132,17 @@ class ChatViewModel @Inject constructor(
                 if (event is AppEvent.LocationStateChanged && !event.enabled) {
                     Log.i(TAG, "定位关闭，自动退出群聊")
                     leaveGroup()
+                }
+            }
+        }
+
+        // 修复：持续监听全局昵称变化（DataStore 异步加载完成后的回填 + 用户改名后的同步）
+        viewModelScope.launch {
+            SharedStateManager.nickname.collect { stored ->
+                if (stored.isNotEmpty() && stored != nickname) {
+                    nickname = stored
+                    _uiState.value = _uiState.value.copy(nickname = stored)
+                    Log.i(TAG, "昵称已从全局状态同步: $stored")
                 }
             }
         }
@@ -443,6 +468,53 @@ class ChatViewModel @Inject constructor(
     }
 
     // ---- 游戏消息发送 ----
+
+    /**
+     * Hub 在群聊中插入一条系统消息（如游戏规则说明），本地存储并广播给全体。
+     */
+    fun sendSystemMessage(content: String) {
+        val blePlugin = registry.getPlugin<BlePlugin>("ble") ?: return
+        val storagePlugin = registry.getPlugin<StoragePlugin>("storage") ?: return
+        val groupId = _uiState.value.groupId
+        if (groupId.isEmpty()) return
+
+        val msgId = UUID.randomUUID().toString()
+        val timestamp = System.currentTimeMillis()
+
+        // 本地存储
+        runDb {
+            val sysEntity = MessageEntity(
+                msgId = msgId,
+                groupId = groupId,
+                senderUuid = myUuidShort,
+                senderName = "系统",
+                content = content,
+                type = MessageType.SYSTEM,
+                timestamp = timestamp,
+                isDelivered = true,
+            )
+            storagePlugin.getMessageDao().upsert(sysEntity)
+        }
+
+        // 广播给其他成员（用 SYS 消息类型，接收端已有处理逻辑）
+        try {
+            val sysMsg = ChatMessage(
+                t = ProtocolMessageType.SYS.code,
+                u = myUuidShort,
+                c = content,
+                g = groupId.take(4),
+                ts = timestamp,
+                mid = msgId,
+            )
+            if (_uiState.value.isHub) {
+                blePlugin.broadcastToClients(sysMsg.toJson().toByteArray())
+            } else {
+                blePlugin.writeToHub(sysMsg.toJson().toByteArray())
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "广播系统消息失败", e)
+        }
+    }
 
     /**
      * 广播游戏消息给全体成员（Hub 端调用）。
@@ -1159,6 +1231,15 @@ class ChatViewModel @Inject constructor(
                             storagePlugin.getMessageDao().upsert(sysEntity)
                         }
                     }
+
+                    // 修复：Hub 收到改名消息后转发给其他 Client（原实现只更新本地，其他成员看不到）
+                    if (_uiState.value.isHub && msg.u != myUuidShort) {
+                        try {
+                            blePlugin.broadcastToClients(rawData.toByteArray())
+                        } catch (e: Exception) {
+                            Log.e(TAG, "转发改名消息失败", e)
+                        }
+                    }
                 }
 
                 ProtocolMessageType.DISSOLVE -> {
@@ -1265,17 +1346,23 @@ class ChatViewModel @Inject constructor(
                         val payload = com.ephemeral.chat.protocol.GameMessagePayload.fromJson(msg.c ?: "")
                         if (payload != null && payload.gid.isNotEmpty()) {
                             Log.d(TAG, "GAME msg: gid=${payload.gid}, act=${payload.act}, from=${msg.u}, priv=${payload.priv}")
-                            viewModelScope.launch {
-                                eventBus.publish(
-                                    "game_${payload.gid}",
-                                    com.ephemeral.chat.core.eventbus.AppEvent.GameMessage(
-                                        senderUuid = msg.u,
-                                        senderName = msg.n ?: "",
-                                        action = payload.act,
-                                        data = payload.data,
-                                        isPrivate = payload.priv,
-                                    ),
-                                )
+
+                            // 聊天级游戏邀请消息（gid="chat"）：在此直接处理，不转发给游戏插件
+                            if (payload.gid == "chat") {
+                                handleChatGameInvite(payload, msg.u, msg.n ?: "")
+                            } else {
+                                viewModelScope.launch {
+                                    eventBus.publish(
+                                        "game_${payload.gid}",
+                                        com.ephemeral.chat.core.eventbus.AppEvent.GameMessage(
+                                            senderUuid = msg.u,
+                                            senderName = msg.n ?: "",
+                                            action = payload.act,
+                                            data = payload.data,
+                                            isPrivate = payload.priv,
+                                        ),
+                                    )
+                                }
                             }
                         } else {
                             Log.w(TAG, "GAME msg parse failed: ${msg.c?.take(50)}")
@@ -1342,6 +1429,166 @@ class ChatViewModel @Inject constructor(
      */
     fun backToChat() {
         _uiState.value = _uiState.value.copy(screen = Screen.Chat)
+    }
+
+    // ---- 游戏邀请机制 ----
+
+    /** Hub 侧：邀请期间记录各游戏已同意的成员 */
+    private val gameAcceptedMembers = ConcurrentHashMap<String, MutableSet<String>>()
+
+    /**
+     * 处理聊天级游戏邀请消息（gid="chat"）。
+     */
+    private fun handleChatGameInvite(payload: com.ephemeral.chat.protocol.GameMessagePayload, senderUuid: String, senderName: String) {
+        try {
+            val data = JSONObject(payload.data)
+            when (payload.act) {
+                "invite" -> {
+                    // Client 收到邀请：显示弹窗
+                    if (!_uiState.value.isHub) {
+                        val gameId = data.optString("gameId", "")
+                        val gameName = data.optString("gameName", "")
+                        val inviter = data.optString("inviterName", "群主")
+                        val totalCount = data.optInt("totalCount", 0)
+                        val acceptedCount = data.optInt("acceptedCount", 0)
+                        Log.i(TAG, "收到游戏邀请: $gameName from $inviter")
+                        _uiState.value = _uiState.value.copy(
+                            gameInvite = GameInvite(
+                                gameId = gameId,
+                                gameName = gameName,
+                                inviterName = inviter,
+                                acceptedCount = acceptedCount,
+                                totalCount = totalCount,
+                            ),
+                        )
+                    }
+                }
+                "invite_update" -> {
+                    // Client 收到计数更新
+                    if (!_uiState.value.isHub) {
+                        val gameId = data.optString("gameId", "")
+                        val acceptedCount = data.optInt("acceptedCount", 0)
+                        val totalCount = data.optInt("totalCount", 0)
+                        _uiState.value.gameInvite?.let { invite ->
+                            if (invite.gameId == gameId) {
+                                _uiState.value = _uiState.value.copy(
+                                    gameInvite = invite.copy(acceptedCount = acceptedCount, totalCount = totalCount),
+                                )
+                            }
+                        }
+                    }
+                }
+                "accept" -> {
+                    // Hub 收到某成员同意
+                    val gameId = data.optString("gameId", "")
+                    handleGameAcceptance(senderUuid, gameId, accepted = true)
+                }
+                "decline" -> {
+                    // Hub 收到某成员拒绝
+                    val gameId = data.optString("gameId", "")
+                    Log.i(TAG, "玩家 $senderName 拒绝了游戏邀请")
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "处理游戏邀请消息失败", e)
+        }
+    }
+
+    /**
+     * Hub 发起游戏邀请：广播 invite 消息，各成员聊天页弹窗，同意后跳转游戏界面。
+     *
+     * @param gameId 游戏 ID（如 "numberBomb"）
+     * @param gameName 游戏显示名（如 "数字炸弹"）
+     */
+    fun sendGameInvite(gameId: String, gameName: String) {
+        val members = _uiState.value.members.map { it.memberUuid }
+        // 初始化邀请集合：Hub 自己算已同意
+        gameAcceptedMembers[gameId] = mutableSetOf(myUuidShort)
+        Log.i(TAG, "发起游戏邀请: $gameName, 当前成员 ${members.size} 人")
+
+        val data = JSONObject().apply {
+            put("gameId", gameId)
+            put("gameName", gameName)
+            put("inviterName", nickname)
+            put("totalCount", members.size)
+            put("acceptedCount", 1)
+        }.toString()
+        sendGameBroadcast("chat", "invite", data)
+    }
+
+    /**
+     * Client 同意游戏邀请：跳转对应游戏界面并通知 Hub。
+     */
+    fun acceptGameInvite() {
+        val invite = _uiState.value.gameInvite ?: return
+        Log.i(TAG, "同意游戏邀请: ${invite.gameName}")
+
+        _uiState.value = _uiState.value.copy(
+            gameInvite = invite.copy(hasAccepted = true),
+            screen = if (invite.gameId == "numberBomb") Screen.NumberBomb else Screen.WhoIsSpy,
+        )
+
+        if (!_uiState.value.isHub) {
+            sendGameToHub("chat", "accept", JSONObject().apply { put("gameId", invite.gameId) }.toString())
+        }
+    }
+
+    /**
+     * Client 拒绝游戏邀请：关闭弹窗并通知 Hub。
+     */
+    fun declineGameInvite() {
+        val invite = _uiState.value.gameInvite ?: return
+        Log.i(TAG, "拒绝游戏邀请: ${invite.gameName}")
+        _uiState.value = _uiState.value.copy(gameInvite = invite.copy(hasDeclined = true))
+
+        if (!_uiState.value.isHub) {
+            sendGameToHub("chat", "decline", JSONObject().apply { put("gameId", invite.gameId) }.toString())
+        }
+    }
+
+    /**
+     * Hub 收到 accept/decline：更新计数并广播给全体。
+     */
+    private fun handleGameAcceptance(senderUuid: String, gameId: String, accepted: Boolean) {
+        if (!_uiState.value.isHub) return
+        val acceptedSet = gameAcceptedMembers[gameId] ?: mutableSetOf()
+        if (accepted) {
+            acceptedSet.add(senderUuid)
+        }
+        gameAcceptedMembers[gameId] = acceptedSet
+
+        val totalCount = _uiState.value.members.size
+        val data = JSONObject().apply {
+            put("gameId", gameId)
+            put("acceptedCount", acceptedSet.size)
+            put("totalCount", totalCount)
+        }.toString()
+        sendGameBroadcast("chat", "invite_update", data)
+
+        // 更新 Hub 自己的邀请弹窗计数
+        _uiState.value.gameInvite?.let { invite ->
+            if (invite.gameId == gameId) {
+                _uiState.value = _uiState.value.copy(
+                    gameInvite = invite.copy(acceptedCount = acceptedSet.size, totalCount = totalCount),
+                )
+            }
+        }
+        Log.i(TAG, "游戏邀请 $gameId: 已同意 ${acceptedSet.size}/$totalCount")
+
+        // 全员同意后开始游戏
+        if (accepted && acceptedSet.size >= totalCount) {
+            Log.i(TAG, "全员已同意，开始游戏: $gameId")
+            val app = EphemeralChatApplication.get()
+            when (gameId) {
+                "numberBomb" -> {
+                    app.pluginRegistry.getPlugin<com.ephemeral.chat.plugins.game.numberbomb.NumberBombPlugin>("numberBomb")
+                        ?.onAllAccepted()
+                }
+                "whoIsSpy" -> {
+                    // 谁是卧底目前由发起人直接开始，暂不走邀请流程
+                }
+            }
+        }
     }
 
     /**

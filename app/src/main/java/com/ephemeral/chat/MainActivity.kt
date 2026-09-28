@@ -21,6 +21,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -51,8 +52,58 @@ class MainActivity : ComponentActivity() {
                 Surface(
                     color = MaterialTheme.colorScheme.background,
                 ) {
-                    PermissionGate()
+                    // 修复：双击返回键退出 App（首页按返回时提示"再按一次退出"）
+                    DoubleBackToExitWrapper {
+                        PermissionGate()
+                    }
                 }
+            }
+        }
+    }
+}
+
+/**
+ * 双击返回键退出包装——首次按返回提示，2 秒内再按一次退出 App。
+ */
+@Composable
+private fun DoubleBackToExitWrapper(content: @Composable () -> Unit) {
+    val activity = androidx.compose.ui.platform.LocalContext.current as? ComponentActivity
+    var lastBackTime by remember { mutableStateOf(0L) }
+    var showExitHint by remember { mutableStateOf(false) }
+
+    androidx.activity.compose.BackHandler {
+        val now = System.currentTimeMillis()
+        if (now - lastBackTime < 2000) {
+            activity?.finish()
+        } else {
+            lastBackTime = now
+            showExitHint = true
+        }
+    }
+
+    content()
+
+    if (showExitHint) {
+        LaunchedEffect(lastBackTime) {
+            kotlinx.coroutines.delay(2000)
+            showExitHint = false
+        }
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.BottomCenter,
+        ) {
+            Surface(
+                color = MaterialTheme.colorScheme.inverseSurface,
+                contentColor = MaterialTheme.colorScheme.inverseOnSurface,
+                shape = MaterialTheme.shapes.medium,
+                modifier = Modifier.padding(bottom = 48.dp),
+                shadowElevation = 4.dp,
+            ) {
+                Text(
+                    text = "再按一次返回键退出",
+                    fontSize = adaptiveSp(14f),
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp),
+                )
             }
         }
     }

@@ -14,24 +14,33 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.systemBars
+import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.InlineTextContent
+import androidx.compose.foundation.text.appendInlineContent
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ExitToApp
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.SportsEsports
 import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.EmojiEmotions
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -58,12 +67,20 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.Placeholder
+import androidx.compose.ui.text.PlaceholderVerticalAlign
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.ephemeral.chat.core.ui.adaptive.adaptiveDp
 import com.ephemeral.chat.core.ui.adaptive.adaptiveSp
 import com.ephemeral.chat.plugins.chat.ChatViewModel
 import com.ephemeral.chat.plugins.chat.FileTransferHelper
+import com.ephemeral.chat.plugins.emoji.EmojiPlugin
+import com.ephemeral.chat.plugins.emoji.ui.EmojiPanel
+import com.ephemeral.chat.plugins.emoji.ui.diceRes
 import com.ephemeral.chat.plugins.storage.entity.MessageEntity
 import com.ephemeral.chat.plugins.storage.entity.MessageType
 import org.json.JSONObject
@@ -81,7 +98,14 @@ fun ChatScreen(viewModel: ChatViewModel) {
     var menuExpanded by remember { mutableStateOf(false) }
     var showExitDialog by remember { mutableStateOf(false) }
     var showFileSheet by remember { mutableStateOf(false) }
+    var showEmojiPanel by remember { mutableStateOf(false) }
     val context = androidx.compose.ui.platform.LocalContext.current
+
+    // 获取 EmojiPlugin 实例
+    val emojiPlugin = remember {
+        com.ephemeral.chat.EphemeralChatApplication.get().pluginRegistry
+            .getPlugin<EmojiPlugin>("emoji")
+    }
 
     // 消息列表状态：新消息到达时自动滚动到底部
     val listState = rememberLazyListState()
@@ -166,6 +190,14 @@ fun ChatScreen(viewModel: ChatViewModel) {
                     }
                 },
                 actions = {
+                    // 游戏入口
+                    IconButton(onClick = { viewModel.showGameList() }) {
+                        Icon(
+                            Icons.Default.SportsEsports,
+                            contentDescription = "游戏",
+                            modifier = Modifier.size(adaptiveDp(24f)),
+                        )
+                    }
                     // 成员列表
                     IconButton(onClick = { viewModel.showMembers() }) {
                         Icon(
@@ -220,6 +252,9 @@ fun ChatScreen(viewModel: ChatViewModel) {
                 },
             )
         },
+        // 修复：让 Scaffold content 区域适配 IME（键盘），键盘弹出时整体自适应收缩
+        contentWindowInsets = WindowInsets.systemBars
+            .union(WindowInsets.ime),
     ) { padding ->
         Column(
             modifier = Modifier
@@ -269,15 +304,34 @@ fun ChatScreen(viewModel: ChatViewModel) {
             }
 
             // 底部输入栏
+            val keyboardController = LocalSoftwareKeyboardController.current
+            var inputText by remember { mutableStateOf("") }
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(adaptiveDp(8f)),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                var inputText by remember { mutableStateOf("") }
+                // 表情按钮：展开/收起表情面板（展开时收起键盘，参考 QQ）
+                IconButton(onClick = {
+                    if (!showEmojiPanel) {
+                        keyboardController?.hide()
+                    }
+                    showEmojiPanel = !showEmojiPanel
+                }) {
+                    Icon(
+                        Icons.Default.EmojiEmotions,
+                        contentDescription = "表情",
+                        modifier = Modifier.size(adaptiveDp(28f)),
+                        tint = if (showEmojiPanel) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 // "+" 按钮：打开文件选择底部弹窗
-                IconButton(onClick = { showFileSheet = true }) {
+                IconButton(onClick = {
+                    showEmojiPanel = false
+                    showFileSheet = true
+                }) {
                     Icon(
                         Icons.Default.Add,
                         contentDescription = "发送文件",
@@ -286,7 +340,11 @@ fun ChatScreen(viewModel: ChatViewModel) {
                 }
                 OutlinedTextField(
                     value = inputText,
-                    onValueChange = { inputText = it },
+                    onValueChange = {
+                        inputText = it
+                        // 输入时收起表情面板
+                        if (showEmojiPanel) showEmojiPanel = false
+                    },
                     modifier = Modifier.weight(1f),
                     placeholder = { Text("输入消息", fontSize = adaptiveSp(14f)) },
                 )
@@ -305,6 +363,19 @@ fun ChatScreen(viewModel: ChatViewModel) {
                         modifier = Modifier.size(adaptiveDp(24f)),
                     )
                 }
+            }
+
+            // 表情面板（在输入栏下方展开，参考 QQ 布局）
+            if (showEmojiPanel && emojiPlugin != null) {
+                EmojiPanel(
+                    emojiPlugin = emojiPlugin,
+                    onSendEmoji = { emoji ->
+                        inputText += emoji
+                    },
+                    onSendGame = { result ->
+                        viewModel.sendMessage(result)
+                    },
+                )
             }
         }
     }
@@ -397,6 +468,40 @@ fun ChatScreen(viewModel: ChatViewModel) {
     // 全屏图片预览
     state.previewImagePath?.let { path ->
         ImagePreviewScreen(viewModel = viewModel, imagePath = path)
+    }
+
+    // 游戏邀请弹窗（收到邀请时显示，同意后跳转游戏界面）
+    state.gameInvite?.let { invite ->
+        if (!invite.hasDeclined && !invite.hasAccepted) {
+            AlertDialog(
+                onDismissRequest = { viewModel.declineGameInvite() },
+                title = { Text("游戏邀请", fontSize = adaptiveSp(16f)) },
+                text = {
+                    Column {
+                        Text(
+                            "${invite.inviterName} 邀请你玩「${invite.gameName}」",
+                            fontSize = adaptiveSp(14f),
+                        )
+                        Spacer(modifier = Modifier.height(adaptiveDp(8f)))
+                        Text(
+                            "已同意 ${invite.acceptedCount}/${invite.totalCount}",
+                            fontSize = adaptiveSp(12f),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = { viewModel.acceptGameInvite() }) {
+                        Text("加入游戏", fontSize = adaptiveSp(14f), color = MaterialTheme.colorScheme.primary)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { viewModel.declineGameInvite() }) {
+                        Text("暂不加入", fontSize = adaptiveSp(14f))
+                    }
+                },
+            )
+        }
     }
 }
 
@@ -546,7 +651,7 @@ fun MessageBubble(message: MessageEntity, isMine: Boolean, viewModel: ChatViewMo
                         .clip(RoundedCornerShape(adaptiveDp(12f)))
                         .background(bgColor)
                         .padding(adaptiveDp(12f))
-                        .width(adaptiveDp(240f)),
+                        .widthIn(max = adaptiveDp(240f)),
                 ) {
                     if (!isMine) {
                         Text(
@@ -556,13 +661,66 @@ fun MessageBubble(message: MessageEntity, isMine: Boolean, viewModel: ChatViewMo
                         )
                         Spacer(modifier = Modifier.height(adaptiveDp(2f)))
                     }
-                    Text(
-                        text = message.content,
-                        fontSize = adaptiveSp(14f),
-                        color = textColor,
-                    )
+                    // 识别 [dice:N] 占位符并内联渲染骰子图标
+                    val diceRegex = remember { Regex("\\[dice:([1-6])\\]") }
+                    if (diceRegex.containsMatchIn(message.content)) {
+                        DiceInlineText(
+                            content = message.content,
+                            fontSize = adaptiveSp(14f),
+                            color = textColor,
+                        )
+                    } else {
+                        Text(
+                            text = message.content,
+                            fontSize = adaptiveSp(14f),
+                            color = textColor,
+                        )
+                    }
                 }
             }
         }
     }
+}
+
+/**
+ * 骰子内联文本——解析 [dice:N] 占位符，替换为骰子矢量图内联渲染。
+ * 旧版本 App（不支持占位符识别）会显示原始文本。
+ */
+@Composable
+private fun DiceInlineText(
+    content: String,
+    fontSize: androidx.compose.ui.unit.TextUnit,
+    color: androidx.compose.ui.graphics.Color,
+) {
+    val diceRegex = remember { Regex("\\[dice:([1-6])\\]") }
+    val inlineContentMap = remember(content) { mutableMapOf<String, InlineTextContent>() }
+    val annotated = remember(content) {
+        val builder = AnnotatedString.Builder()
+        var last = 0
+        diceRegex.findAll(content).forEach { match ->
+            builder.append(content.substring(last, match.range.first))
+            val point = match.groupValues[1].toInt()
+            val id = "dice$point"
+            builder.appendInlineContent(id, match.value)
+            inlineContentMap[id] = InlineTextContent(
+                placeholder = Placeholder(fontSize * 1.6, fontSize * 1.6, PlaceholderVerticalAlign.TextCenter),
+            ) {
+                Icon(
+                    painter = painterResource(diceRes(point)),
+                    contentDescription = "骰子 $point 点",
+                    modifier = Modifier.fillMaxSize(),
+                    tint = color,
+                )
+            }
+            last = match.range.last + 1
+        }
+        builder.append(content.substring(last))
+        builder.toAnnotatedString()
+    }
+    Text(
+        text = annotated,
+        inlineContent = inlineContentMap,
+        fontSize = fontSize,
+        color = color,
+    )
 }

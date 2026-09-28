@@ -117,9 +117,8 @@ class SpyPlugin : IPlugin {
         }
     }
 
-    /** 所有玩家信息 (uuid, nickname)——游戏全程保持完整（含已淘汰），供结束页显示名字 */
-    var allPlayers: List<Pair<String, String>> = emptyList()
-        private set
+    /** 所有玩家信息查询（实时）——供结束页显示名字 */
+    var allPlayersProvider: (() -> List<Pair<String, String>>)? = null
 
     fun bindContext(
         isHub: Boolean,
@@ -127,16 +126,16 @@ class SpyPlugin : IPlugin {
         sendBroadcast: (String, String) -> Boolean,
         sendToHub: (String, String) -> Boolean,
         sendPrivate: (String, String, String) -> Boolean,
-        members: List<Pair<String, String>>,
+        membersProvider: () -> List<Pair<String, String>>, // (uuid, nickname) 实时查询
     ) {
         this.isHub = isHub
         this.myUuidShort = myUuidShort
         this.sendGameBroadcast = sendBroadcast
         this.sendGameToHub = sendToHub
         this.sendGamePrivate = sendPrivate
-        this.getMemberUuids = { members.map { it.first } }
-        this.getMemberName = { uuid -> members.firstOrNull { it.first == uuid }?.second ?: "玩家" }
-        allPlayers = members
+        this.getMemberUuids = { membersProvider().map { it.first } }
+        this.getMemberName = { uuid -> membersProvider().firstOrNull { it.first == uuid }?.second ?: "玩家" }
+        allPlayersProvider = membersProvider
         _uiState.value = _uiState.value.copy(isHub = isHub, myUuid = myUuidShort)
     }
 
@@ -455,7 +454,7 @@ class SpyPlugin : IPlugin {
             }
             revealsArr.put(JSONObject().apply {
                 put("player", uuid)
-                put("name", allPlayers.firstOrNull { it.first == uuid }?.second ?: "玩家")
+                put("name", allPlayersProvider?.invoke()?.firstOrNull { it.first == uuid }?.second ?: "玩家")
                 put("word", word)
                 put("role", role.name.lowercase())
             })
@@ -482,7 +481,7 @@ class SpyPlugin : IPlugin {
                 PlayerRole.WHITE_BLANK -> "(白板)"
             }
             // 修复：包含玩家名，避免结束时 activePlayers 已移除淘汰者导致找不到名字
-            val name = allPlayers.firstOrNull { it.first == uuid }?.second ?: "玩家"
+            val name = allPlayersProvider?.invoke()?.firstOrNull { it.first == uuid }?.second ?: "玩家"
             Triple("$uuid|$name", word, role.name.lowercase())
         }
         _uiState.value = _uiState.value.copy(
